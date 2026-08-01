@@ -1,0 +1,248 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  DIRECTOR
+  STAFF
+  VIEWER
+}
+
+enum TransportType {
+  AIR    // Đường hàng không
+  SEA    // Đường biển
+  RAIL   // Đường sắt (tàu)
+  ROAD   // Đường bộ
+}
+
+enum CustomsStatus {
+  DRAFT
+  SUBMITTED
+  PROCESSING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  fullName  String
+  phone     String?
+  avatarUrl String?
+  role      Role     @default(STAFF)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  companyId String?
+
+  customsRecords CustomsRecord[]
+  chatMessages   ChatMessage[]
+  assignedTasks  Task[]         @relation("AssignedTasks")
+  createdTasks   Task[]         @relation("CreatedTasks")
+  companies      Company[]      @relation("CompanyCreators")
+  company        Company?       @relation("CompanyMembers", fields: [companyId], references: [id], onDelete: SetNull)
+  notifications  Notification[]
+
+  @@map("users")
+}
+
+model Company {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  role         String
+  contactEmail String?
+  contactPhone String?
+  address      String?
+  notes        String?
+  createdById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  createdBy    User?    @relation("CompanyCreators", fields: [createdById], references: [id], onDelete: SetNull)
+  users        User[]   @relation("CompanyMembers")
+  customsRecords CustomsRecord[]
+
+  @@map("companies")
+}
+
+model CustomsRecord {
+  id          String        @id @default(cuid())
+  recordNo    String        @unique // Số tờ khai
+
+  // Thời gian
+  entryDate   DateTime      // Ngày nhập cảnh
+  exitDate    DateTime?     // Ngày xuất cảnh
+
+  // Loại vận chuyển chính
+  transportType TransportType
+
+  // Chặng hành trình (legacy - kept for backward compatibility)
+  leg1Origin      String?   // Chặng 1 - điểm đi
+  leg1Destination String?   // Chặng 1 - điểm đến
+  leg2Origin      String?   // Chặng 2 - điểm đi
+  leg2Destination String?   // Chặng 2 - điểm đến
+
+  // Thông tin chuyến
+  flightNo      String?     // Số hiệu chuyến bay
+  vesselName    String?     // Tên tàu biển
+  trainNo       String?     // Số hiệu tàu lửa
+
+  // Thông tin đơn vị
+  exporterName    String    // Tên nhà xuất khẩu
+  exporterAddress String?
+  exporterCountry String    @default("VN")
+  importerName    String    // Tên nhà nhập khẩu
+  importerAddress String?
+  importerCountry String    @default("VN")
+
+  // Thương mại
+  invoiceNo       String?
+  billOfLading    String?   // Vận đơn
+  containerNo     String?   // Số container
+
+  // Tài chính
+  totalValue      Float     @default(0)
+  currency        String    @default("USD")
+  vatRate         Float     @default(10)    // % VAT
+  vatAmount       Float     @default(0)     // Tiền VAT
+  shippingFee     Float     @default(0)     // Phí vận chuyển
+  distanceKm      Float     @default(0)
+  exchangeRate    Float     @default(25000)
+  totalPayable    Float     @default(0)     // Tổng tiền phải trả
+
+  status          CustomsStatus @default(DRAFT)
+  notes           String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  createdById     String
+  createdBy       User      @relation(fields: [createdById], references: [id])
+  companyId       String?
+  company         Company?   @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  materials       Material[]
+  attachments     Attachment[]
+  journeys        Journey[]
+
+  @@map("customs_records")
+}
+
+model Journey {
+  id              String        @id @default(cuid())
+  customsRecordId String
+  customsRecord   CustomsRecord @relation(fields: [customsRecordId], references: [id], onDelete: Cascade)
+
+  // Thứ tự chặng
+  legNumber       Int           // 1, 2, 3, 4...
+
+  // Loại vận chuyển cho chặng này
+  transportType   TransportType
+
+  // Thông tin điểm đi/đến
+  origin          String        // Điểm đi
+  destination     String        // Điểm đến
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([customsRecordId, legNumber])
+  @@map("journeys")
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject    String
+  content    String
+  source     String   // APP | EMAIL
+  isRead     Boolean  @default(false)
+  externalId String?  @unique
+  receivedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId, receivedAt])
+  @@map("notifications")
+}
+
+model Material {
+  id              String  @id @default(cuid())
+  customsRecordId String
+  customsRecord   CustomsRecord @relation(fields: [customsRecordId], references: [id], onDelete: Cascade)
+  
+  // Thông tin vật tư
+  itemNo          Int           // STT
+  hsCode          String?       // Mã HS
+  description     String        // Mô tả hàng hóa
+  quantity        Float
+  unit            String        // Đơn vị (kg, cái, thùng...)
+  unitPrice       Float
+  totalPrice      Float
+  origin          String?       // Xuất xứ
+  weight          Float?        // Trọng lượng (kg)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("materials")
+}
+
+model Attachment {
+  id              String  @id @default(cuid())
+  customsRecordId String
+  customsRecord   CustomsRecord @relation(fields: [customsRecordId], references: [id], onDelete: Cascade)
+  
+  fileName        String
+  fileUrl         String
+  fileType        String  // excel, pdf, image
+  fileSize        Int
+  
+  createdAt       DateTime @default(now())
+
+  @@map("attachments")
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  role      String   // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+
+  @@map("chat_messages")
+}
+
+model Task {
+  id           String     @id @default(cuid())
+  title        String
+  description  String?
+  workDate     DateTime
+  status       TaskStatus @default(TODO)
+  assignedToId String
+  assignedById String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  assignedTo   User       @relation("AssignedTasks", fields: [assignedToId], references: [id], onDelete: Cascade)
+  assignedBy   User       @relation("CreatedTasks", fields: [assignedById], references: [id], onDelete: Cascade)
+
+  @@map("tasks")
+}

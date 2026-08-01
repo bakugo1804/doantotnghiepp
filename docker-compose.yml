@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: customs_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-customs_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-customs_pass}
+      POSTGRES_DB: ${DB_NAME:-customs_db}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U customs_user -d customs_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: customs_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-customs_user}:${DB_PASSWORD:-customs_pass}@postgres:5432/${DB_NAME:-customs_db}
+      JWT_SECRET: ${JWT_SECRET:-supersecretjwtkey}
+      # Trợ lý AI dùng Ollama chạy trên máy host (miễn phí, không cần API key).
+      # Có thể đổi sang Groq/Gemini/OpenAI bằng cách sửa 3 biến dưới.
+      AI_BASE_URL: ${AI_BASE_URL:-http://host.docker.internal:11434/v1}
+      AI_MODEL: ${AI_MODEL:-qwen2.5:3b}
+      AI_API_KEY: ${AI_API_KEY:-not-needed}
+      PORT: 3001
+      NODE_ENV: development
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '3001:3001'
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/prisma:/app/prisma
+      - /app/node_modules
+      - /app/dist
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3001/api']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: customs_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      API_URL: http://customs_backend:3001
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-customs_nextauth_secret_2024}
+      NEXTAUTH_URL: http://localhost:3000
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
