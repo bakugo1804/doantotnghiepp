@@ -4,8 +4,6 @@
 
 ## 📌 TRẠNG THÁI DỰ ÁN (cập nhật 23/06/2026)
 
-> **Dành cho AI (Copilot):** Đây là file tóm tắt tiến độ. Khi người dùng bảo "đọc README và làm tiếp", hãy đọc section này trước rồi tiếp tục từ mục **VIỆC CẦN LÀM TIẾP THEO**.
-
 ### ✅ ĐÃ HOÀN THÀNH (TOÀN BỘ)
 - Toàn bộ **61 files scaffold** đã được tạo tại `d:\Đồ án tốt nghiệp\customs-app\`
 - **Backend (NestJS):** Auth JWT+Roles, Customs CRUD, Materials, Reports (Excel export), AI (OpenAI chat + parse Excel), Chat (Socket.io), Users
