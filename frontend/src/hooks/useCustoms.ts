@@ -32,12 +32,25 @@ export function useCreateCustoms() {
   });
 }
 
+/** Các bước xử lý tiếp theo mà vai trò hiện tại được phép thực hiện. */
+export function useCustomsTransitions(id: string) {
+  return useQuery({
+    queryKey: ['customs-transitions', id],
+    queryFn: () => customsApi.getTransitions(id).then((r) => r.data),
+    enabled: !!id,
+  });
+}
+
 export function useUpdateCustomsStatus() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, status }: { id: string; status: CustomsStatus }) =>
-      customsApi.updateStatus(id, status).then((r) => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['customs'] }),
+    mutationFn: ({ id, status, note }: { id: string; status: CustomsStatus; note?: string }) =>
+      customsApi.updateStatus(id, status, note).then((r) => r.data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['customs'] });
+      // Đổi trạng thái thì tập bước hợp lệ tiếp theo cũng đổi theo.
+      qc.invalidateQueries({ queryKey: ['customs-transitions', variables.id] });
+    },
   });
 }
 

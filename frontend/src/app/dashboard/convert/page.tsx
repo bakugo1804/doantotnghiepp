@@ -48,8 +48,7 @@ function ConvertCard({ mode }: { mode: Mode }) {
         </div>
       </div>
 
-      <h3 className="text-center font-semibold text-gray-800 mb-1">Chuyển {fromLabel} → {toLabel}</h3>
-      <p className="text-center text-sm text-gray-500 mb-4">Tải lên file {fromLabel} theo mẫu, hệ thống trả về file {toLabel}.</p>
+      <h3 className="text-center font-semibold text-gray-800 mb-4">Chuyển {fromLabel} → {toLabel}</h3>
 
       <button
         onClick={() => inputRef.current?.click()}
@@ -73,14 +72,10 @@ export default function ConvertPage() {
     <div>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Chuyển đổi file</h1>
-        <p className="text-gray-500 text-sm mt-1">Chuyển đổi qua lại giữa Excel và PDF theo mẫu tờ khai hải quan (không lưu vào hệ thống).</p>
       </div>
       <div className="grid gap-6 md:grid-cols-2">
         <ConvertCard mode="excel-to-pdf" />
         <ConvertCard mode="pdf-to-excel" />
-      </div>
-      <div className="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-        Lưu ý: Chuyển đổi hoạt động tốt nhất với file theo đúng mẫu tờ khai. Với PDF, phần bảng hàng hóa/hành trình đọc theo lớp văn bản nên có thể cần kiểm tra lại.
       </div>
     </div>
   );

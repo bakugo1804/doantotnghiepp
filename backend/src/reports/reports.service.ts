@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
-import { CUSTOMS_FIELDS, CustomsFieldKey, JOURNEY_COLUMNS, MATERIAL_COLUMNS, TRANSPORT_LABELS } from '../common/customs-form';
+import { CUSTOMS_FIELDS, CustomsFieldKey, IDENTITY_SECTION, JOURNEY_COLUMNS, MATERIAL_COLUMNS, TRANSPORT_LABELS } from '../common/customs-form';
 
 // pdfmake (server-side) — nạp font Roboto (hỗ trợ tiếng Việt) từ vfs của pdfmake
 const PdfPrinter = require('pdfmake');
@@ -30,8 +30,22 @@ interface FormModel {
   totals?: Totals;
 }
 
-// Nhóm hiển thị (đã bỏ 'Hành trình' vì chuyển sang bảng nhiều chặng riêng)
+// Nhóm hiển thị (đã bỏ 'Hành trình' vì chuyển sang bảng nhiều chặng riêng).
+// IDENTITY_SECTION ("Số tờ khai") cố tình không có ở đây: nó được vẽ riêng ở
+// góc trên biểu mẫu, thêm vào danh sách này sẽ khiến nó xuất hiện hai lần.
 const SECTION_ORDER = ['Thông tin chung', 'Bên xuất khẩu', 'Bên nhập khẩu', 'Chứng từ', 'Tài chính'];
+
+/**
+ * Số cột vật lý của biểu mẫu Excel.
+ *
+ * Phải >= số cột của bảng rộng nhất (bảng vật tư, 8 cột) thì mỗi cột logic mới
+ * có chỗ riêng; nếu ít hơn, các cột cuối bị dồn chung một ô và ghi đè lẫn nhau.
+ */
+const FORM_COLS = MATERIAL_COLUMNS.length;
+const LAST_COL = String.fromCharCode(64 + FORM_COLS); // 8 -> 'H'
+
+/** Bề rộng từng cột, đặt theo cột tương ứng của bảng vật tư. */
+const COL_WIDTHS = [7, 15, 30, 11, 10, 15, 13, 14];
 
 const BRAND = 'FF1E40AF';
 const LIGHT = 'FFEFF4FF';
@@ -72,6 +86,7 @@ export class ReportsService {
   private recordToValues(record: any): Record<CustomsFieldKey, string> {
     const shipNo = record.flightNo || record.vesselName || record.trainNo || '';
     return {
+      declarationNo: record.recordNo || '',
       entryDate: this.fmtDate(record.entryDate),
       exitDate: this.fmtDate(record.exitDate),
       flightNo: shipNo,
@@ -147,6 +162,7 @@ export class ReportsService {
     const totalValue = materials.reduce((s, m) => s + (Number(m.quantity) || 0) * (Number(m.unitPrice) || 0), 0);
     const vatAmount = (totalValue * vatRate) / 100;
     const values: Record<CustomsFieldKey, string> = {
+      declarationNo: p.recordNo || '',
       entryDate: p.entryDate ? new Date(p.entryDate).toLocaleDateString('vi-VN') : '',
       exitDate: p.exitDate ? new Date(p.exitDate).toLocaleDateString('vi-VN') : '',
       flightNo: p.flightNo || '',
@@ -176,7 +192,7 @@ export class ReportsService {
 
   private drawFormSheet(sheet: ExcelJS.Worksheet, model: FormModel, isTemplate: boolean) {
     const { values, journeys, materials, recordNo, totals } = model;
-    [24, 16, 20, 14, 16, 16].forEach((w, i) => (sheet.getColumn(i + 1).width = w));
+    COL_WIDTHS.forEach((w, i) => (sheet.getColumn(i + 1).width = w));
 
     const thin: Partial<ExcelJS.Borders> = {
       top: { style: 'thin', color: { argb: 'FFBFBFBF' } },
@@ -186,31 +202,49 @@ export class ReportsService {
     };
 
     let r = 1;
-    sheet.mergeCells(`A${r}:F${r}`);
+
+    sheet.mergeCells(`A${r}:${LAST_COL}${r}`);
     const title = sheet.getCell(`A${r}`);
-    title.value = 'TỜ KHAI HẢI QUAN';
-    title.font = { bold: true, size: 18, color: { argb: BRAND } };
+    title.value = 'TỜ KHAI HÀNG HÓA XUẤT KHẨU, NHẬP KHẨU';
+    title.font = { bold: true, size: 16, color: { argb: BRAND } };
     title.alignment = { horizontal: 'center', vertical: 'middle' };
-    sheet.getRow(r).height = 28;
+    sheet.getRow(r).height = 26;
     r++;
 
-    sheet.mergeCells(`A${r}:F${r}`);
+    sheet.mergeCells(`A${r}:${LAST_COL}${r}`);
     const sub = sheet.getCell(`A${r}`);
-    sub.value = 'CUSTOMS DECLARATION';
-    sub.font = { italic: true, size: 10, color: { argb: 'FF64748B' } };
+    sub.value = 'CUSTOMS DECLARATION FOR IMPORTED / EXPORTED GOODS';
+    sub.font = { italic: true, size: 9.5, color: { argb: 'FF64748B' } };
     sub.alignment = { horizontal: 'center' };
     r++;
 
-    sheet.mergeCells(`A${r}:F${r}`);
-    const noCell = sheet.getCell(`A${r}`);
-    noCell.value = recordNo ? `Số tờ khai: ${recordNo}` : 'Số tờ khai: ..............................';
-    noCell.font = { bold: true, size: 11, color: { argb: 'FF334155' } };
-    noCell.alignment = { horizontal: 'center' };
+    sheet.mergeCells(`A${r}:C${r}`);
+    const formCode = sheet.getCell(`A${r}`);
+    formCode.value = `Mẫu số: HQ/${new Date().getFullYear()}/XNK`;
+    formCode.font = { italic: true, size: 9, color: { argb: 'FF64748B' } };
+    formCode.alignment = { horizontal: 'left', indent: 1 };
+
+    // Nhãn và giá trị phải nằm ở HAI ô khác nhau. Gộp thành một chuỗi
+    // "Số tờ khai: 123" thì lúc đọc file lại không tách được đâu là nhãn, đâu là
+    // giá trị, nên số tờ khai người dùng điền sẽ bị bỏ qua hoàn toàn.
+    sheet.mergeCells(`D${r}:E${r}`);
+    const noLabel = sheet.getCell(`D${r}`);
+    noLabel.value = 'Số tờ khai';
+    noLabel.font = { bold: true, size: 11, color: { argb: 'FF334155' } };
+    noLabel.alignment = { horizontal: 'right', indent: 1 };
+
+    sheet.mergeCells(`F${r}:${LAST_COL}${r}`);
+    const noValue = sheet.getCell(`F${r}`);
+    noValue.value = recordNo || '';
+    noValue.font = { bold: true, size: 11, color: { argb: BRAND } };
+    noValue.alignment = { horizontal: 'left', indent: 1, vertical: 'middle' };
+    noValue.border = { bottom: { style: 'thin', color: { argb: 'FF94A3B8' } } };
+    sheet.getRow(r).height = 18;
     r += 2;
 
     // Các nhóm thông tin
     for (const section of SECTION_ORDER) {
-      sheet.mergeCells(`A${r}:F${r}`);
+      sheet.mergeCells(`A${r}:${LAST_COL}${r}`);
       const h = sheet.getCell(`A${r}`);
       h.value = section.toUpperCase();
       h.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
@@ -220,8 +254,8 @@ export class ReportsService {
       r++;
 
       for (const f of CUSTOMS_FIELDS.filter((x) => x.section === section)) {
-        sheet.mergeCells(`A${r}:B${r}`);
-        sheet.mergeCells(`C${r}:F${r}`);
+        sheet.mergeCells(`A${r}:C${r}`);
+        sheet.mergeCells(`D${r}:${LAST_COL}${r}`);
         const labelCell = sheet.getCell(`A${r}`);
         labelCell.value = f.label;
         labelCell.font = { bold: true, size: 10, color: { argb: 'FF475569' } };
@@ -229,7 +263,7 @@ export class ReportsService {
         labelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LIGHT } };
         labelCell.border = thin;
 
-        const valueCell = sheet.getCell(`C${r}`);
+        const valueCell = sheet.getCell(`D${r}`);
         valueCell.value = values[f.key] || '';
         valueCell.font = { size: 10 };
         valueCell.alignment = { vertical: 'middle', indent: 1, wrapText: true };
@@ -242,22 +276,22 @@ export class ReportsService {
     }
 
     // Bảng HÀNH TRÌNH (nhiều chặng)
-    r = this.drawTable(sheet, r, thin, 'HÀNH TRÌNH VẬN CHUYỂN (có thể nhiều chặng)', JOURNEY_COLUMNS.map((c) => c.label), [1, 1.6, 2, 2], isTemplate ? this.blankRows(6) : journeys.map((j) => [j.legNumber, j.transportType, j.origin, j.destination]), isTemplate);
+    r = this.drawTable(sheet, r, thin, 'HÀNH TRÌNH VẬN CHUYỂN', JOURNEY_COLUMNS.map((c) => c.label), [0.5, 2, 2.6, 2.6], isTemplate ? this.blankRows(6, JOURNEY_COLUMNS.length) : journeys.map((j) => [j.legNumber, j.transportType, j.origin, j.destination]));
 
-    // Bảng VẬT TƯ
-    r = this.drawTable(sheet, r + 1, thin, 'DANH MỤC HÀNG HÓA / VẬT TƯ', MATERIAL_COLUMNS.map((c) => c.label), [0.6, 1, 2.4, 0.9, 0.9, 1.1, 1, 1], isTemplate ? this.blankRows(8, 8, true) : materials.map((m, i) => [i + 1, m.hsCode ?? '', m.description ?? '', m.quantity ?? '', m.unit ?? '', m.unitPrice ?? '', m.origin ?? '', m.weight ?? '']), isTemplate, true);
+    // Bảng VẬT TƯ - mỗi cột logic chiếm đúng 1 cột vật lý
+    r = this.drawTable(sheet, r + 1, thin, 'DANH MỤC HÀNG HÓA / VẬT TƯ', MATERIAL_COLUMNS.map((c) => c.label), MATERIAL_COLUMNS.map(() => 1), isTemplate ? this.blankRows(8, MATERIAL_COLUMNS.length) : materials.map((m, i) => [i + 1, m.hsCode ?? '', m.description ?? '', m.quantity ?? '', m.unit ?? '', m.unitPrice ?? '', m.origin ?? '', m.weight ?? '']), true);
 
     // Tổng kết
     if (totals) {
       r++;
       const addTotal = (label: string, value: string, bold = false) => {
-        sheet.mergeCells(`A${r}:D${r}`);
+        sheet.mergeCells(`A${r}:E${r}`);
         const l = sheet.getCell(`A${r}`);
         l.value = label;
         l.alignment = { horizontal: 'right', indent: 1 };
         l.font = { bold, size: 10, color: { argb: bold ? BRAND : 'FF334155' } };
-        sheet.mergeCells(`E${r}:F${r}`);
-        const v = sheet.getCell(`E${r}`);
+        sheet.mergeCells(`F${r}:${LAST_COL}${r}`);
+        const v = sheet.getCell(`F${r}`);
         v.value = value;
         v.alignment = { horizontal: 'right', indent: 1 };
         v.font = { bold, size: bold ? 12 : 10, color: { argb: bold ? BRAND : 'FF334155' } };
@@ -271,46 +305,41 @@ export class ReportsService {
 
     // Chữ ký xác nhận
     r += 2;
-    sheet.mergeCells(`A${r}:C${r}`);
-    sheet.mergeCells(`D${r}:F${r}`);
-    const s1 = sheet.getCell(`A${r}`);
-    s1.value = 'NGƯỜI KHAI BÁO';
-    s1.font = { bold: true, size: 10 };
-    s1.alignment = { horizontal: 'center' };
-    const s2 = sheet.getCell(`D${r}`);
-    s2.value = 'XÁC NHẬN CỦA GIÁM ĐỐC';
-    s2.font = { bold: true, size: 10 };
-    s2.alignment = { horizontal: 'center' };
-    r++;
-    sheet.mergeCells(`A${r}:C${r}`);
-    sheet.mergeCells(`D${r}:F${r}`);
-    const s1b = sheet.getCell(`A${r}`);
-    s1b.value = '(Ký, ghi rõ họ tên)';
-    s1b.font = { italic: true, size: 9, color: { argb: 'FF64748B' } };
-    s1b.alignment = { horizontal: 'center' };
-    const s2b = sheet.getCell(`D${r}`);
-    s2b.value = '(Ký, ghi rõ họ tên)';
-    s2b.font = { italic: true, size: 9, color: { argb: 'FF64748B' } };
-    s2b.alignment = { horizontal: 'center' };
-    sheet.getRow(r).height = 50;
 
-    if (isTemplate) {
-      r += 2;
-      sheet.mergeCells(`A${r}:F${r}`);
-      const note = sheet.getCell(`A${r}`);
-      note.value =
-        'HƯỚNG DẪN: Điền trực tiếp vào ô bên phải mỗi nhãn. Bảng HÀNH TRÌNH có thể thêm nhiều chặng (Đường hàng không/Đường biển/Đường sắt/Đường bộ). ' +
-        'Bảng HÀNG HÓA có thể thêm nhiều dòng. Ngày ghi dạng NGÀY/THÁNG/NĂM. Sau đó tải file này lên hệ thống ở mục "Nhập từ file".';
-      note.font = { italic: true, size: 9, color: { argb: 'FF64748B' } };
-      note.alignment = { wrapText: true, vertical: 'top' };
-      sheet.getRow(r).height = 46;
-    }
+    // Dòng địa điểm - ngày tháng, căn phải phía trên chữ ký bên phải.
+    sheet.mergeCells(`E${r}:${LAST_COL}${r}`);
+    const dateLine = sheet.getCell(`E${r}`);
+    const now = new Date();
+    dateLine.value = isTemplate
+      ? '……………, ngày …… tháng …… năm ………'
+      : `Hà Nội, ngày ${now.getDate()} tháng ${now.getMonth() + 1} năm ${now.getFullYear()}`;
+    dateLine.font = { italic: true, size: 10, color: { argb: 'FF334155' } };
+    dateLine.alignment = { horizontal: 'center' };
+    r++;
+
+    const signatureRow = (left: string, right: string, font: Partial<ExcelJS.Font>) => {
+      sheet.mergeCells(`A${r}:D${r}`);
+      sheet.mergeCells(`E${r}:${LAST_COL}${r}`);
+      const l = sheet.getCell(`A${r}`);
+      l.value = left;
+      l.font = font;
+      l.alignment = { horizontal: 'center' };
+      const right2 = sheet.getCell(`E${r}`);
+      right2.value = right;
+      right2.font = font;
+      right2.alignment = { horizontal: 'center' };
+      r++;
+    };
+
+    signatureRow('NGƯỜI KHAI BÁO', 'XÁC NHẬN CỦA GIÁM ĐỐC', { bold: true, size: 10 });
+    signatureRow('(Ký, ghi rõ họ tên)', '(Ký, ghi rõ họ tên)', { italic: true, size: 9, color: { argb: 'FF64748B' } });
+    sheet.getRow(r - 1).height = 50;
   }
 
-  /** Vẽ 1 bảng (tiêu đề + header cột + các dòng dữ liệu) vào 6 cột A..F. Trả về row tiếp theo. */
-  private drawTable(sheet: ExcelJS.Worksheet, startRow: number, thin: Partial<ExcelJS.Borders>, title: string, headers: string[], weights: number[], rows: any[][], isTemplate: boolean, descIsCol3 = false): number {
+  /** Vẽ 1 bảng (tiêu đề + header cột + các dòng dữ liệu) trên toàn bộ bề ngang biểu mẫu. Trả về row tiếp theo. */
+  private drawTable(sheet: ExcelJS.Worksheet, startRow: number, thin: Partial<ExcelJS.Borders>, title: string, headers: string[], weights: number[], rows: any[][], descIsCol3 = false): number {
     let r = startRow;
-    sheet.mergeCells(`A${r}:F${r}`);
+    sheet.mergeCells(`A${r}:${LAST_COL}${r}`);
     const t = sheet.getCell(`A${r}`);
     t.value = title;
     t.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
@@ -319,8 +348,8 @@ export class ReportsService {
     sheet.getRow(r).height = 20;
     r++;
 
-    // Map các cột logic sang 6 cột vật lý theo trọng số
-    const spans = this.spread(weights, 6);
+    // Map các cột logic sang các cột vật lý theo trọng số
+    const spans = this.spread(weights, FORM_COLS);
     const headerRow = sheet.getRow(r);
     headers.forEach((h, i) => {
       const [c1, c2] = spans[i];
@@ -353,21 +382,45 @@ export class ReportsService {
     return r;
   }
 
-  /** Chia n cột vật lý cho các cột logic theo trọng số; trả về [colStart, colEnd] (1-based). */
+  /**
+   * Chia totalCols cột vật lý cho các cột logic theo trọng số; trả về [colStart, colEnd] (1-based).
+   *
+   * Mỗi cột logic được cấp trước 1 cột vật lý, phần dư mới chia theo trọng số
+   * (largest remainder). Chia thẳng theo tỷ lệ rồi làm tròn - như bản trước đây -
+   * khiến cột nhẹ cân bị làm tròn xuống 0, các cột sau bị đẩy dần sang phải và
+   * cuối cùng tràn khỏi bề ngang biểu mẫu: cả nhóm Đơn giá / Xuất xứ / Trọng
+   * lượng cùng rơi vào một ô nằm ngoài khung và ghi đè lên nhau.
+   */
   private spread(weights: number[], totalCols: number): [number, number][] {
-    const sum = weights.reduce((a, b) => a + b, 0);
+    const widths = weights.map(() => 1);
+    const spare = totalCols - weights.length;
+
+    if (spare > 0) {
+      const sum = weights.reduce((a, b) => a + b, 0) || weights.length;
+      const exact = weights.map((w) => (w / sum) * spare);
+      const extra = exact.map((v) => Math.floor(v));
+      let used = extra.reduce((a, b) => a + b, 0);
+      const byRemainder = exact
+        .map((v, i) => ({ i, remainder: v - Math.floor(v) }))
+        .sort((a, b) => b.remainder - a.remainder);
+      for (const { i } of byRemainder) {
+        if (used >= spare) break;
+        extra[i] += 1;
+        used += 1;
+      }
+      extra.forEach((e, i) => (widths[i] += e));
+    }
+
     const spans: [number, number][] = [];
     let col = 1;
-    weights.forEach((w, i) => {
-      let width = i === weights.length - 1 ? totalCols - col + 1 : Math.max(1, Math.round((w / sum) * totalCols));
-      if (col + width - 1 > totalCols) width = totalCols - col + 1;
+    for (const width of widths) {
       spans.push([col, col + width - 1]);
       col += width;
-    });
+    }
     return spans;
   }
 
-  private blankRows(count: number, cols = 4, _numberFirst = false): any[][] {
+  private blankRows(count: number, cols: number): any[][] {
     return Array.from({ length: count }, (_, i) => {
       const row: any[] = Array.from({ length: cols }, () => '');
       row[0] = i + 1;
@@ -428,9 +481,19 @@ export class ReportsService {
     ];
 
     const content: any[] = [
-      { text: 'TỜ KHAI HẢI QUAN', style: 'title', alignment: 'center' },
-      { text: 'CUSTOMS DECLARATION', style: 'subtitle', alignment: 'center', margin: [0, 0, 0, 2] },
-      { text: model.recordNo ? `Số tờ khai: ${model.recordNo}` : (isTemplate ? 'Số tờ khai: ..............................' : ''), alignment: 'center', bold: true, color: '#334155', margin: [0, 0, 0, 12] },
+      { text: 'TỜ KHAI HÀNG HÓA XUẤT KHẨU, NHẬP KHẨU', style: 'title', alignment: 'center' },
+      { text: 'CUSTOMS DECLARATION FOR IMPORTED / EXPORTED GOODS', style: 'subtitle', alignment: 'center', margin: [0, 0, 0, 4] },
+      { text: `Mẫu số: HQ/${new Date().getFullYear()}/XNK`, italics: true, fontSize: 9, color: '#64748b' },
+      // Số tờ khai đứng riêng một dòng bắt đầu bằng đúng nhãn của nó: khi đọc
+      // ngược file PDF, bộ đọc dò theo từng dòng "Nhãn: giá trị", nên nếu ghép
+      // chung dòng với "Mẫu số" thì hai chuỗi dính liền và không tách ra được.
+      {
+        text: `Số tờ khai: ${model.recordNo || (isTemplate ? '………………………' : '—')}`,
+        alignment: 'right',
+        bold: true,
+        color: '#334155',
+        margin: [0, 2, 0, 12],
+      },
 
       sectionHeader('Thông tin chung'),
       infoTable('Thông tin chung'),
@@ -443,6 +506,11 @@ export class ReportsService {
       },
       sectionHeader('Chứng từ'),
       infoTable('Chứng từ'),
+
+      // Không có khối này thì tiền tệ, thuế suất VAT và ghi chú không hề xuất
+      // hiện trên bản PDF, nên khi đọc ngược lại file sẽ mất trắng ba trường đó.
+      sectionHeader('Tài chính'),
+      infoTable('Tài chính'),
 
       sectionHeader('Hành trình vận chuyển'),
       { table: { headerRows: 1, widths: [28, 90, '*', '*'], body: journeyBody }, layout: this.tableLayout(), margin: [0, 0, 0, 12] },

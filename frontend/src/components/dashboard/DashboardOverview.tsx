@@ -2,30 +2,54 @@
 
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, BarChart3, FilePlus2, FileText, ShieldCheck, Users } from 'lucide-react';
+import {
+  ArrowRight,
+  BarChart3,
+  CircleDollarSign,
+  Clock3,
+  FilePlus2,
+  FileText,
+  Plane,
+  Search,
+  Ship,
+  Train,
+  Truck,
+  Users,
+} from 'lucide-react';
 import { customsApi, usersApi } from '@/lib/api';
-import { formatCurrency, formatDateTime, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { formatCurrency, formatDateTime, roleLabel, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { compactCurrency, compactNumber, formatMonthKey, STATUS_COLOR_VAR, STATUS_ORDER, TRANSPORT_ORDER } from '@/lib/viz';
 import { useLocale } from '@/components/settings/LocaleProvider';
+import { ChartCard, VizTable } from '@/components/charts/ChartCard';
+import { TrendChart } from '@/components/charts/TrendChart';
+import { StackedBar } from '@/components/charts/StackedBar';
+import { RankedBars } from '@/components/charts/RankedBars';
+import { StatTile } from '@/components/charts/StatTile';
+import { Skeleton } from '@/components/ui/Skeleton';
 
 type DashboardOverviewProps = {
   role: string;
   userName: string;
 };
 
+const TRANSPORT_ICON = { SEA: Ship, AIR: Plane, ROAD: Truck, RAIL: Train } as const;
+
 export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
   const isAdmin = role === 'ADMIN';
   const canManageUsers = role === 'ADMIN' || role === 'DIRECTOR';
   const { locale } = useLocale();
+  const vi = locale === 'vi';
 
   const { data: recordsData, isLoading: isRecordsLoading } = useQuery({
     queryKey: ['dashboard-records', role],
-    queryFn: () => customsApi.getAll({ page: 1, limit: 5 }).then((response) => response.data),
+    queryFn: () => customsApi.getAll({ page: 1, limit: 6 }).then((response) => response.data),
   });
 
+  // Thống kê giờ mở cho mọi vai trò — trước đây chỉ ADMIN gọi được, nên nhân viên
+  // nhìn thấy một dashboard rỗng dù vẫn đọc được chính những tờ khai đó.
   const { data: stats, isLoading: isStatsLoading } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: () => customsApi.getStats().then((response) => response.data),
-    enabled: isAdmin,
   });
 
   const { data: users } = useQuery({
@@ -36,227 +60,409 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
 
   const recentRecords = recordsData?.data ?? [];
   const activeUsers = users?.filter((user: any) => user.isActive).length ?? 0;
-  const adminUsers = users?.filter((user: any) => user.role === 'ADMIN').length ?? 0;
-  const directorUsers = users?.filter((user: any) => user.role === 'DIRECTOR').length ?? 0;
-  const processingRecords = recentRecords.filter((record: any) => record.status === 'PROCESSING').length;
-  const draftRecords = recentRecords.filter((record: any) => record.status === 'DRAFT').length;
-  const roleLabel = locale === 'vi'
-    ? { ADMIN: 'Quản trị viên', DIRECTOR: 'Giám đốc', STAFF: 'Nhân viên', VIEWER: 'Người xem' }[role as 'ADMIN' | 'DIRECTOR' | 'STAFF' | 'VIEWER'] ?? role
-    : { ADMIN: 'Administrator', DIRECTOR: 'Director', STAFF: 'Staff', VIEWER: 'Viewer' }[role as 'ADMIN' | 'DIRECTOR' | 'STAFF' | 'VIEWER'] ?? role;
 
-  const copy = locale === 'vi'
+  const countOf = (status: string) =>
+    stats?.byStatus?.find((item: any) => item.status === status)?._count ?? 0;
+
+  const trend = stats?.trend ?? [];
+  const trendData = trend.map((point: any) => ({
+    label: formatMonthKey(point.month, locale),
+    value: point.count,
+    hint: formatMonthKey(point.month, locale),
+  }));
+  const trendCounts = trend.map((point: any) => point.count);
+
+  // Dùng ROLE_LABELS chung thay vì tự khai bảng nhãn tại đây - trước kia trang này
+  // gọi ADMIN là "Quản trị viên" trong khi trang Người dùng gọi là "Giám đốc".
+  const currentRoleLabel = vi
+    ? roleLabel(role)
+    : { ADMIN: 'Director', DIRECTOR: 'Manager', STAFF: 'Staff', VIEWER: 'Viewer' }[role as string] ?? role;
+
+  const copy = vi
     ? {
         badge: 'Tổng quan vận hành',
         greeting: 'Xin chào',
-        introAdmin: 'Bạn có thể theo dõi toàn bộ hệ thống, luồng xử lý hồ sơ và tình trạng người dùng từ một màn hình.',
-        introStaff: 'Đây là tầm nhìn nhanh về những hồ sơ gần đây, mục cần xử lý và các thao tác thường dùng của bạn.',
-        status: 'Trạng thái',
-        visibleRecords: 'Tờ khai hiển thị',
+        status: 'Vai trò',
+        activeAccounts: 'Tài khoản hoạt động',
+        totalRecords: 'Tổng tờ khai',
+        totalRecordsHint: 'Toàn bộ hồ sơ đang theo dõi',
+        processing: 'Đang xử lý',
+        processingHint: 'Cần ưu tiên theo dõi',
+        totalValue: 'Tổng giá trị',
+        totalValueHint: 'Đã quy đổi về USD',
+        approved: 'Đã duyệt',
+        approvedHint: 'Hồ sơ đã được thông qua',
+        vsLastMonth: 'so với tháng trước',
+        trendTitle: 'Tờ khai theo tháng',
+        trendSubtitle: '12 tháng gần nhất, tính theo ngày nhập cảnh',
+        trendUnit: 'tờ khai',
+        statusTitle: 'Phân bổ trạng thái',
+        statusSubtitle: 'Tỷ trọng hồ sơ theo từng bước xử lý',
+        transportTitle: 'Loại hình vận chuyển',
+        transportSubtitle: 'Số tờ khai theo phương thức',
+        companiesTitle: 'Doanh nghiệp dẫn đầu',
+        companiesSubtitle: 'Top 5 nhà nhập khẩu theo giá trị',
         recentRecords: 'Tờ khai gần đây',
         recentRecordsHint: 'Cập nhật nhanh các tờ khai vừa tạo hoặc vừa thay đổi',
         viewAll: 'Xem tất cả',
-        loading: 'Đang tải dữ liệu...',
         empty: 'Chưa có hồ sơ nào để hiển thị.',
+        emptyCta: 'Tạo tờ khai đầu tiên',
         updatedAt: 'Cập nhật',
         viewDetails: 'Xem chi tiết',
         quickActions: 'Thao tác nhanh',
-        priorities: 'Ưu tiên hôm nay',
-        backlogTitle: 'Xử lý hồ sơ đang tồn',
-        backlogSuffix: 'hồ sơ đang chờ xử lý.',
-        activeAccountsTitle: 'Tài khoản đang hoạt động',
-        activeAccountsSuffix: 'người dùng đang có thể truy cập hệ thống.',
+        month: 'Tháng',
+        count: 'Số tờ khai',
+        statusCol: 'Trạng thái',
+        companyCol: 'Doanh nghiệp',
+        valueCol: 'Giá trị',
+        transportCol: 'Phương thức',
+        tableView: 'Xem bảng',
+        chartView: 'Xem biểu đồ',
       }
     : {
         badge: 'Operations overview',
         greeting: 'Hello',
-        introAdmin: 'Track the whole platform, declaration flow, and user activity from a single workspace.',
-        introStaff: 'This is your quick view of recent declarations, pending work, and common actions.',
-        status: 'Current role',
-        visibleRecords: 'Visible records',
+        status: 'Role',
+        activeAccounts: 'Active accounts',
+        totalRecords: 'Total declarations',
+        totalRecordsHint: 'All tracked records',
+        processing: 'In progress',
+        processingHint: 'Needs immediate attention',
+        totalValue: 'Total value',
+        totalValueHint: 'Normalised to USD',
+        approved: 'Approved',
+        approvedHint: 'Records cleared for release',
+        vsLastMonth: 'vs last month',
+        trendTitle: 'Declarations per month',
+        trendSubtitle: 'Last 12 months, by entry date',
+        trendUnit: 'records',
+        statusTitle: 'Status distribution',
+        statusSubtitle: 'Share of records at each processing step',
+        transportTitle: 'Transport mode',
+        transportSubtitle: 'Declarations by shipping method',
+        companiesTitle: 'Leading companies',
+        companiesSubtitle: 'Top 5 importers by value',
         recentRecords: 'Recent records',
         recentRecordsHint: 'Quick access to the declarations that changed most recently',
         viewAll: 'View all',
-        loading: 'Loading data...',
         empty: 'No records available yet.',
+        emptyCta: 'Create your first declaration',
         updatedAt: 'Updated',
         viewDetails: 'View details',
         quickActions: 'Quick actions',
-        priorities: 'Today priorities',
-        backlogTitle: 'Outstanding processing work',
-        backlogSuffix: 'records are waiting for processing.',
-        activeAccountsTitle: 'Active accounts',
-        activeAccountsSuffix: 'users can access the platform right now.',
+        month: 'Month',
+        count: 'Records',
+        statusCol: 'Status',
+        companyCol: 'Company',
+        valueCol: 'Value',
+        transportCol: 'Mode',
+        tableView: 'Table view',
+        chartView: 'Chart view',
       };
 
-  const summaryCards = [
-    {
-      label: isAdmin ? (locale === 'vi' ? 'Tổng tờ khai hệ thống' : 'Total declarations') : (locale === 'vi' ? 'Tờ khai gần đây' : 'Recent declarations'),
-      value: isAdmin ? stats?.total ?? 0 : recordsData?.total ?? 0,
-      hint: isAdmin ? (locale === 'vi' ? 'Toàn bộ dữ liệu đang theo dõi' : 'All tracked records') : (locale === 'vi' ? 'Các hồ sơ bạn có thể truy cập' : 'Records currently visible to you'),
-      icon: FileText,
-      tone: 'bg-blue-50 text-blue-700 border-blue-100',
-    },
-    {
-      label: locale === 'vi' ? 'Đang xử lý' : 'In progress',
-      value: isAdmin
-        ? stats?.byStatus?.find((item: any) => item.status === 'PROCESSING')?._count ?? 0
-        : processingRecords,
-      hint: locale === 'vi' ? 'Cần ưu tiên theo dõi' : 'Needs immediate attention',
-      icon: BarChart3,
-      tone: 'bg-amber-50 text-amber-700 border-amber-100',
-    },
-    {
-      label: isAdmin ? (locale === 'vi' ? 'Tài khoản giám đốc' : 'Director accounts') : (locale === 'vi' ? 'Bản nháp gần đây' : 'Recent drafts'),
-      value: isAdmin ? directorUsers : draftRecords,
-      hint: isAdmin ? (locale === 'vi' ? 'Giám đốc đang quản lý các công ty' : 'Directors managing companies') : (locale === 'vi' ? 'Tờ khai cần hoàn thiện' : 'Records that still need completion'),
-      icon: isAdmin ? Users : FilePlus2,
-      tone: 'bg-emerald-50 text-emerald-700 border-emerald-100',
-    },
-    {
-      label: isAdmin ? (locale === 'vi' ? 'Tài khoản quản trị' : 'Admin accounts') : (locale === 'vi' ? 'Vai trò hiện tại' : 'Current role'),
-      value: isAdmin ? adminUsers : roleLabel,
-      hint: isAdmin ? (locale === 'vi' ? 'Nhân sự có quyền điều phối' : 'People allowed to coordinate work') : (locale === 'vi' ? 'Phạm vi truy cập của bạn' : 'Your current access scope'),
-      icon: ShieldCheck,
-      tone: 'bg-violet-50 text-violet-700 border-violet-100',
-    },
-  ];
+  const statusSegments = STATUS_ORDER.map((key) => ({
+    key,
+    label: STATUS_LABELS[key]?.label ?? key,
+    value: countOf(key),
+    color: STATUS_COLOR_VAR[key],
+  }));
+
+  const transportRows = TRANSPORT_ORDER.map((key) => ({
+    key,
+    label: TRANSPORT_LABELS[key] ?? key,
+    value: stats?.byTransport?.find((item: any) => item.transportType === key)?._count ?? 0,
+  })).sort((a, b) => b.value - a.value);
+
+  const companyRows = (stats?.topCompanies ?? []).map((company: any) => ({
+    key: company.name,
+    label: company.name,
+    value: company.value,
+    caption: `${company.count} ${vi ? 'hồ sơ' : 'records'}`,
+  }));
 
   const quickActions = [
-    { href: '/dashboard/customs/new', label: locale === 'vi' ? 'Tạo tờ khai mới' : 'Create declaration', description: locale === 'vi' ? 'Khởi tạo hồ sơ xuất nhập khẩu mới' : 'Open a fresh import-export declaration' },
-    { href: '/dashboard/search', label: locale === 'vi' ? 'Tìm kiếm toàn cục' : 'Global search', description: locale === 'vi' ? 'Tìm nhanh hồ sơ, công ty, người dùng và task' : 'Search records, companies, users, and tasks' },
-    { href: '/dashboard/companies', label: locale === 'vi' ? 'Danh sách công ty' : 'Company directory', description: locale === 'vi' ? 'Theo dõi các doanh nghiệp đang xuất nhập khẩu' : 'Review companies active in import-export flows' },
-    { href: '/dashboard/tasks', label: locale === 'vi' ? 'Giao việc hôm nay' : 'Daily tasks', description: locale === 'vi' ? 'Xem và cập nhật nhiệm vụ trong ngày' : 'Review and update daily assignments' },
+    { href: '/dashboard/customs/new', icon: FilePlus2, label: vi ? 'Tạo tờ khai mới' : 'Create declaration', description: vi ? 'Khởi tạo hồ sơ xuất nhập khẩu mới' : 'Open a fresh declaration' },
+    { href: '/dashboard/search', icon: Search, label: vi ? 'Tìm kiếm toàn cục' : 'Global search', description: vi ? 'Tìm nhanh hồ sơ, công ty, người dùng' : 'Search records, companies, users' },
+    { href: '/dashboard/reports', icon: BarChart3, label: vi ? 'Báo cáo & phân tích' : 'Reports & analytics', description: vi ? 'Thống kê và xuất dữ liệu ra Excel' : 'Analytics and Excel export' },
     ...(canManageUsers
-      ? [{ href: '/dashboard/admin/users', label: locale === 'vi' ? 'Điều phối người dùng' : 'Manage users', description: locale === 'vi' ? 'Kiểm soát vai trò và trạng thái tài khoản' : 'Control user roles and account status' }]
+      ? [{ href: '/dashboard/admin/users', icon: Users, label: vi ? 'Điều phối người dùng' : 'Manage users', description: vi ? 'Kiểm soát vai trò và trạng thái tài khoản' : 'Control roles and account status' }]
       : []),
   ];
 
+  const totalPayable = stats?.totals?.payable ?? 0;
+  const momentum = stats?.momentum;
+
   return (
     <div className="space-y-6">
-      <section className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-900 via-blue-900 to-cyan-800 p-6 text-white shadow-sm">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+      {/* Đầu trang */}
+      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-900 via-blue-900 to-cyan-800 p-6 text-white shadow-sm">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -right-16 -top-20 h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -bottom-24 left-1/3 h-64 w-64 rounded-full bg-blue-500/20 blur-3xl"
+        />
+
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-sm uppercase tracking-[0.24em] text-cyan-200">{copy.badge}</p>
-            <h1 className="mt-3 text-3xl font-bold">{copy.greeting} {userName}</h1>
-            <p className="mt-2 max-w-2xl text-sm text-blue-100">
-              {isAdmin ? copy.introAdmin : copy.introStaff}
-            </p>
+            <h1 className="mt-3 text-3xl font-bold">
+              {copy.greeting} {userName}
+            </h1>
           </div>
 
           <div className="grid min-w-[280px] grid-cols-2 gap-3 text-sm">
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
               <p className="text-cyan-100">{copy.status}</p>
-              <p className="mt-2 text-xl font-semibold">{roleLabel}</p>
+              <p className="mt-2 text-xl font-semibold">{currentRoleLabel}</p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
-              <p className="text-cyan-100">{copy.visibleRecords}</p>
-              <p className="mt-2 text-xl font-semibold">{recentRecords.length}</p>
+              <p className="text-cyan-100">{canManageUsers ? copy.activeAccounts : copy.totalRecords}</p>
+              <p className="mt-2 text-xl font-semibold">
+                {canManageUsers ? activeUsers : (stats?.total ?? 0)}
+              </p>
             </div>
           </div>
         </div>
       </section>
 
+      {/* Hàng chỉ số */}
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {summaryCards.map(({ label, value, hint, icon: Icon, tone }) => (
-          <div key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className={`inline-flex rounded-xl border px-3 py-3 ${tone}`}>
-              <Icon className="h-5 w-5" />
-            </div>
-            <p className="mt-4 text-sm text-slate-500">{label}</p>
-            <p className="mt-1 text-3xl font-bold text-slate-900">
-              {isStatsLoading && isAdmin ? '...' : value}
-            </p>
-            <p className="mt-2 text-sm text-slate-500">{hint}</p>
-          </div>
-        ))}
+        <StatTile
+          label={copy.totalRecords}
+          value={compactNumber(stats?.total ?? 0)}
+          hint={copy.totalRecordsHint}
+          icon={FileText}
+          loading={isStatsLoading}
+          trend={trendCounts}
+          deltaPercent={momentum?.changePct}
+          deltaLabel={copy.vsLastMonth}
+        />
+        <StatTile
+          label={copy.processing}
+          value={countOf('PROCESSING')}
+          hint={copy.processingHint}
+          icon={Clock3}
+          loading={isStatsLoading}
+          higherIsBetter={false}
+        />
+        <StatTile
+          label={copy.totalValue}
+          value={compactCurrency(totalPayable, 'USD', vi ? 'vi-VN' : 'en-US')}
+          hint={copy.totalValueHint}
+          icon={CircleDollarSign}
+          loading={isStatsLoading}
+        />
+        <StatTile
+          label={copy.approved}
+          value={countOf('APPROVED') + countOf('COMPLETED')}
+          hint={copy.approvedHint}
+          icon={BarChart3}
+          loading={isStatsLoading}
+        />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.3fr_0.9fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">{copy.recentRecords}</h2>
-              <p className="text-sm text-slate-500">{copy.recentRecordsHint}</p>
-            </div>
-            <Link href="/dashboard/customs" className="inline-flex items-center gap-2 text-sm font-medium text-blue-700">
-              {copy.viewAll}
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
+      {/* Xu hướng + phân bổ trạng thái */}
+      <section className="grid gap-6 xl:grid-cols-[1.5fr_1fr]">
+        <ChartCard
+          title={copy.trendTitle}
+          subtitle={copy.trendSubtitle}
+          tableLabel={copy.tableView}
+          chartLabel={copy.chartView}
+          table={
+            <VizTable
+              head={[copy.month, copy.count]}
+              rows={trend.map((point: any) => [formatMonthKey(point.month, locale), point.count])}
+            />
+          }
+        >
+          {isStatsLoading ? (
+            <Skeleton className="h-[260px] w-full rounded-xl" />
+          ) : (
+            <TrendChart data={trendData} valueLabel={copy.trendUnit} />
+          )}
+        </ChartCard>
 
-          <div className="divide-y divide-slate-100">
-            {isRecordsLoading ? (
-              <p className="px-5 py-10 text-sm text-slate-400">{copy.loading}</p>
-            ) : recentRecords.length === 0 ? (
-              <p className="px-5 py-10 text-sm text-slate-400">{copy.empty}</p>
-            ) : (
-              recentRecords.map((record: any) => (
-                <div key={record.id} className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <p className="font-semibold text-slate-900">{record.recordNo}</p>
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_LABELS[record.status]?.color ?? 'bg-slate-100 text-slate-700'}`}>
-                        {STATUS_LABELS[record.status]?.label ?? record.status}
-                      </span>
+        <ChartCard
+          title={copy.statusTitle}
+          subtitle={copy.statusSubtitle}
+          tableLabel={copy.tableView}
+          chartLabel={copy.chartView}
+          table={
+            <VizTable
+              head={[copy.statusCol, copy.count]}
+              rows={statusSegments.map((segment) => [segment.label, segment.value])}
+            />
+          }
+        >
+          {isStatsLoading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-[22px] w-full rounded-full" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          ) : (
+            <StackedBar segments={statusSegments} unit={vi ? 'hồ sơ' : ''} />
+          )}
+        </ChartCard>
+      </section>
+
+      {/* Vận chuyển + doanh nghiệp + thao tác nhanh */}
+      <section className="grid gap-6 xl:grid-cols-3">
+        <ChartCard
+          title={copy.transportTitle}
+          subtitle={copy.transportSubtitle}
+          tableLabel={copy.tableView}
+          chartLabel={copy.chartView}
+          table={
+            <VizTable
+              head={[copy.transportCol, copy.count]}
+              rows={transportRows.map((row) => [row.label, row.value])}
+            />
+          }
+        >
+          {isStatsLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : (
+            <RankedBars rows={transportRows} emptyLabel={copy.empty} />
+          )}
+        </ChartCard>
+
+        <ChartCard
+          title={copy.companiesTitle}
+          subtitle={copy.companiesSubtitle}
+          tableLabel={copy.tableView}
+          chartLabel={copy.chartView}
+          table={
+            <VizTable
+              head={[copy.companyCol, copy.valueCol]}
+              rows={companyRows.map((row: any) => [row.label, formatCurrency(row.value, 'USD')])}
+            />
+          }
+        >
+          {isStatsLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : (
+            <RankedBars
+              rows={companyRows}
+              emptyLabel={copy.empty}
+              formatValue={(value) => compactCurrency(value, 'USD', vi ? 'vi-VN' : 'en-US')}
+            />
+          )}
+        </ChartCard>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-base font-semibold text-slate-900">{copy.quickActions}</h2>
+          <div className="mt-4 space-y-2.5">
+            {quickActions.map(({ href, icon: Icon, label, description }) => (
+              <Link
+                key={href}
+                href={href}
+                className="group flex items-center gap-3 rounded-xl border border-slate-200 p-3 transition hover:border-blue-300 hover:bg-blue-50"
+              >
+                <span className="rounded-lg bg-slate-50 p-2 text-slate-500 transition group-hover:bg-white group-hover:text-blue-600">
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-slate-900">{label}</span>
+                  <span className="block truncate text-xs text-slate-500">{description}</span>
+                </span>
+                <ArrowRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-blue-500" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Tờ khai gần đây */}
+      <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">{copy.recentRecords}</h2>
+            <p className="text-sm text-slate-500">{copy.recentRecordsHint}</p>
+          </div>
+          <Link
+            href="/dashboard/customs"
+            className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 transition hover:gap-3"
+          >
+            {copy.viewAll}
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+
+        <div className="divide-y divide-slate-100">
+          {isRecordsLoading ? (
+            Array.from({ length: 3 }).map((_, index) => (
+              <div key={index} className="flex items-center justify-between gap-4 px-5 py-4">
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-3 w-64" />
+                </div>
+                <Skeleton className="h-4 w-24" />
+              </div>
+            ))
+          ) : recentRecords.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 px-5 py-14 text-center">
+              <span className="rounded-2xl bg-slate-50 p-4 text-slate-300">
+                <FileText className="h-8 w-8" />
+              </span>
+              <p className="text-sm text-slate-500">{copy.empty}</p>
+              <Link
+                href="/dashboard/customs/new"
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
+              >
+                <FilePlus2 className="h-4 w-4" />
+                {copy.emptyCta}
+              </Link>
+            </div>
+          ) : (
+            recentRecords.map((record: any) => {
+              const TransportIcon = TRANSPORT_ICON[record.transportType as keyof typeof TRANSPORT_ICON] ?? Ship;
+              return (
+                <div
+                  key={record.id}
+                  className="flex flex-col gap-3 px-5 py-4 transition hover:bg-slate-50/70 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="mt-0.5 rounded-lg bg-slate-50 p-2 text-slate-400">
+                      <TransportIcon className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold text-slate-900">{record.recordNo}</p>
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            STATUS_LABELS[record.status]?.color ?? 'bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          {STATUS_LABELS[record.status]?.label ?? record.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 truncate text-sm text-slate-500">
+                        {record.importerName} • {TRANSPORT_LABELS[record.transportType] ?? record.transportType}
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {copy.updatedAt} {formatDateTime(record.updatedAt)}
+                      </p>
                     </div>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {record.importerName} • {TRANSPORT_LABELS[record.transportType] ?? record.transportType}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-400">
-                      {copy.updatedAt} {formatDateTime(record.updatedAt)}
-                    </p>
                   </div>
-                  <div className="text-left lg:text-right">
-                    <p className="font-semibold text-slate-900">{formatCurrency(record.totalPayable, record.currency)}</p>
-                    <Link href={`/dashboard/customs/${record.id}`} className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-blue-700">
+
+                  <div className="shrink-0 text-left lg:text-right">
+                    <p className="font-semibold tabular-nums text-slate-900">
+                      {formatCurrency(record.totalPayable, record.currency)}
+                    </p>
+                    <Link
+                      href={`/dashboard/customs/${record.id}`}
+                      className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-blue-700 transition hover:gap-2"
+                    >
                       {copy.viewDetails}
                       <ArrowRight className="h-4 w-4" />
                     </Link>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-900">{copy.quickActions}</h2>
-            <div className="mt-4 space-y-3">
-              {quickActions.map((action) => (
-                <Link
-                  key={action.href}
-                  href={action.href}
-                  className="block rounded-2xl border border-slate-200 p-4 transition hover:border-blue-300 hover:bg-blue-50"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-medium text-slate-900">{action.label}</p>
-                      <p className="mt-1 text-sm text-slate-500">{action.description}</p>
-                    </div>
-                    <ArrowRight className="h-4 w-4 text-slate-400" />
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
-
-          {isAdmin && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <h2 className="text-lg font-semibold text-slate-900">{copy.priorities}</h2>
-              <div className="mt-4 space-y-3 text-sm text-slate-600">
-                <div className="rounded-2xl bg-amber-50 p-4 text-amber-900">
-                  <p className="font-semibold">{copy.backlogTitle}</p>
-                  <p className="mt-1">
-                    {stats?.byStatus?.find((item: any) => item.status === 'PROCESSING')?._count ?? 0} {copy.backlogSuffix}
-                  </p>
-                </div>
-                <div className="rounded-2xl bg-emerald-50 p-4 text-emerald-900">
-                  <p className="font-semibold">{copy.activeAccountsTitle}</p>
-                  <p className="mt-1">{activeUsers} {copy.activeAccountsSuffix}</p>
-                </div>
-              </div>
-            </div>
+              );
+            })
           )}
         </div>
       </section>

@@ -13,8 +13,19 @@ export class TasksController {
 
   @ApiOperation({ summary: 'Danh sách công việc' })
   @Get()
-  findAll(@Request() req, @Query('date') date?: string, @Query('assignedToId') assignedToId?: string, @Query('status') status?: string) {
-    return this.tasksService.findAll(req.user.sub, req.user.role, req.user.companyId, { date, assignedToId, status });
+  findAll(
+    @Request() req,
+    @Query('date') date?: string,
+    @Query('assignedToId') assignedToId?: string,
+    @Query('status') status?: string,
+    @Query('customsRecordId') customsRecordId?: string,
+  ) {
+    return this.tasksService.findAll(req.user.sub, req.user.role, req.user.companyId, {
+      date,
+      assignedToId,
+      status,
+      customsRecordId,
+    });
   }
 
   @ApiOperation({ summary: 'Tạo công việc mới' })

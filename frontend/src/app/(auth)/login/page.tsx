@@ -19,7 +19,14 @@ import {
 import Link from 'next/link';
 
 const schema = z.object({
-  email: z.string().email('Email không hợp lệ'),
+  // Chấp nhận cả email lẫn tên đăng nhập nên không ràng buộc định dạng email ở đây;
+  // ràng buộc chặt sẽ chặn mất người nhập đúng tên đăng nhập của họ.
+  identifier: z
+    .string()
+    .min(3, 'Vui lòng nhập email hoặc tên đăng nhập')
+    .refine((value) => !value.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value), {
+      message: 'Email không hợp lệ',
+    }),
   password: z.string().min(6, 'Mật khẩu tối thiểu 6 ký tự'),
 });
 type FormData = z.infer<typeof schema>;
@@ -40,8 +47,10 @@ export default function LoginPage() {
   const onSubmit = async (data: FormData) => {
     setError('');
     const result = await signIn('credentials', { ...data, redirect: false });
-    if (result?.error) setError('Email hoặc mật khẩu không đúng');
-    else router.push('/dashboard/customs');
+    // Hiển thị đúng thông báo từ máy chủ (vd: tài khoản bị khoá) thay vì luôn nói
+    // sai mật khẩu - người dùng sẽ nhập lại mật khẩu mãi mà không hiểu vì sao.
+    if (result?.error) setError(result.error === 'CredentialsSignin' ? 'Tài khoản hoặc mật khẩu không đúng' : result.error);
+    else router.push('/dashboard');
   };
 
   return (
@@ -113,14 +122,16 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Email hoặc tên đăng nhập</label>
               <input
-                {...register('email')}
-                type="email"
-                placeholder="Nhập email của bạn"
+                {...register('identifier')}
+                type="text"
+                autoComplete="username"
+                autoFocus
+                placeholder="Email hoặc tên đăng nhập"
                 className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 transition"
               />
-              {errors.email && <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>}
+              {errors.identifier && <p className="text-red-500 text-sm mt-1">{errors.identifier.message}</p>}
             </div>
 
             <div>

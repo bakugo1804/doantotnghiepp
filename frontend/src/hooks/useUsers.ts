@@ -9,10 +9,20 @@ export function useUsersList() {
   });
 }
 
+export type UpdateUserPayload = {
+  fullName?: string;
+  phone?: string;
+  email?: string;
+  username?: string;
+  password?: string;
+  role?: Role;
+  isActive?: boolean;
+};
+
 export function useUpdateUser() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { fullName?: string; phone?: string; email?: string; role?: Role; isActive?: boolean } }) =>
+    mutationFn: ({ id, data }: { id: string; data: UpdateUserPayload }) =>
       usersApi.update(id, data).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   });

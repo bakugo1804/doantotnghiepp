@@ -1,0 +1,35 @@
+# Chế độ trình diễn - dùng khi demo và bảo vệ đồ án.
+#
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Khác biệt so với chế độ phát triển:
+#
+# 1. Frontend chạy bản đã build sẵn thay vì `next dev`. Ở chế độ dev, Next chỉ
+#    biên dịch một trang vào đúng lúc có người bấm vào nó, nên lần đầu mở mỗi
+#    trang đều phải ngồi chờ "Compiling..." - giữa buổi thuyết trình thì rất kẹt.
+#
+# 2. Bỏ toàn bộ bind mount mã nguồn. Trên Windows, mỗi lần đọc file qua bind mount
+#    đều phải đi vòng từ máy ảo Linux ra hệ thống file của Windows; Next lại đọc
+#    hàng nghìn file mỗi lần biên dịch, nên đây mới là nguyên nhân chính gây ì.
+#    Đổi lại, sửa code sẽ KHÔNG tự cập nhật - phải build lại image.
+#
+# Khi quay lại viết code, chỉ cần chạy `docker-compose up -d` như bình thường.
+
+services:
+  backend:
+    build:
+      target: production
+    environment:
+      NODE_ENV: production
+    volumes:
+      # Vẫn giữ prisma để chạy được migrate; src thì không cần vì đã build vào image.
+      - ./backend/prisma:/app/prisma
+
+  frontend:
+    build:
+      target: production
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+    environment:
+      NODE_ENV: production
+    volumes: []

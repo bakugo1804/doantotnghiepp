@@ -41,12 +41,17 @@ enum TaskStatus {
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
+  /// Tên đăng nhập ngắn, dùng thay email khi đăng nhập (vd: "admin").
+  username  String   @unique
   password  String
   fullName  String
   phone     String?
   avatarUrl String?
   role      Role     @default(STAFF)
+  /// Tài khoản có được phép đăng nhập hay không. KHÔNG phải trạng thái online.
   isActive  Boolean  @default(true)
+  /// Lần đăng nhập gần nhất - dùng để biết ai thực sự đang dùng hệ thống.
+  lastLoginAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   companyId String?
@@ -56,6 +61,7 @@ model User {
   assignedTasks  Task[]         @relation("AssignedTasks")
   createdTasks   Task[]         @relation("CreatedTasks")
   companies      Company[]      @relation("CompanyCreators")
+  statusChanges  CustomsStatusHistory[] @relation("StatusChanges")
   company        Company?       @relation("CompanyMembers", fields: [companyId], references: [id], onDelete: SetNull)
   notifications  Notification[]
 
@@ -140,8 +146,33 @@ model CustomsRecord {
   materials       Material[]
   attachments     Attachment[]
   journeys        Journey[]
+  statusHistory   CustomsStatusHistory[]
+  tasks           Task[]
 
   @@map("customs_records")
+}
+
+/// Nhật ký chuyển trạng thái của tờ khai.
+///
+/// Hồ sơ hải quan cần truy vết được ai duyệt, ai từ chối và vào lúc nào; cột
+/// status trên tờ khai chỉ giữ trạng thái hiện tại nên không trả lời được
+/// những câu hỏi đó khi có tranh chấp.
+model CustomsStatusHistory {
+  id              String        @id @default(cuid())
+  customsRecordId String
+  customsRecord   CustomsRecord @relation(fields: [customsRecordId], references: [id], onDelete: Cascade)
+
+  /// Null ở bản ghi đầu tiên, khi tờ khai vừa được tạo.
+  fromStatus      CustomsStatus?
+  toStatus        CustomsStatus
+  note            String?
+
+  changedById     String?
+  changedBy       User?         @relation("StatusChanges", fields: [changedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime      @default(now())
+
+  @@index([customsRecordId, createdAt])
+  @@map("customs_status_history")
 }
 
 model Journey {
@@ -173,6 +204,8 @@ model Notification {
   subject    String
   content    String
   source     String   // APP | EMAIL
+  /// Đường dẫn trong ứng dụng để bấm vào thông báo là tới thẳng nơi liên quan.
+  link       String?
   isRead     Boolean  @default(false)
   externalId String?  @unique
   receivedAt DateTime @default(now())
@@ -241,8 +274,14 @@ model Task {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
+  /// Tờ khai mà công việc này phục vụ. Cho phép để trống vì vẫn có những việc
+  /// nội bộ không gắn với hồ sơ nào.
+  customsRecordId String?
+  customsRecord   CustomsRecord? @relation(fields: [customsRecordId], references: [id], onDelete: SetNull)
+
   assignedTo   User       @relation("AssignedTasks", fields: [assignedToId], references: [id], onDelete: Cascade)
   assignedBy   User       @relation("CreatedTasks", fields: [assignedById], references: [id], onDelete: Cascade)
 
+  @@index([customsRecordId])
   @@map("tasks")
 }

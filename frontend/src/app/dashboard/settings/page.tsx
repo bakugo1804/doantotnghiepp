@@ -1,20 +1,56 @@
 'use client';
 
 import { ChangeEvent, useEffect, useState } from 'react';
-import { Globe2, Languages, MoonStar, Save, SunMedium, Upload, UserRound } from 'lucide-react';
+import { Languages, MoonStar, Save, SunMedium, Upload, UserRound } from 'lucide-react';
 import { useAppPreferences } from '@/components/settings/AppPreferencesProvider';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { usersApi } from '@/lib/api';
 import { useLocale } from '@/components/settings/LocaleProvider';
 import type { User } from '@/types';
 
+/** Cạnh dài tối đa của ảnh đại diện sau khi thu nhỏ (px). */
+const AVATAR_MAX_SIZE = 256;
+
+/**
+ * Thu nhỏ ảnh về khung vuông trước khi gửi lên máy chủ.
+ *
+ * Ảnh chụp từ điện thoại thường vài MB; mã hoá base64 rồi nhét thẳng vào JSON
+ * thì vượt giới hạn kích thước request và toàn bộ thao tác lưu hồ sơ thất bại,
+ * dù người dùng chỉ đổi mỗi cái ảnh.
+ */
+function shrinkImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Không đọc được tệp ảnh'));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error('Tệp không phải là ảnh hợp lệ'));
+      image.onload = () => {
+        const side = Math.min(image.width, image.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = AVATAR_MAX_SIZE;
+        canvas.height = AVATAR_MAX_SIZE;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('Trình duyệt không hỗ trợ xử lý ảnh'));
+        // Cắt phần giữa thành hình vuông để ảnh không bị bóp méo.
+        ctx.drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, 0, 0, AVATAR_MAX_SIZE, AVATAR_MAX_SIZE);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function SettingsPage() {
   const { locale, setLocale } = useLocale();
-  const { theme, setTheme, sidebarCollapsed } = useAppPreferences();
+  const { theme, setTheme } = useAppPreferences();
   const { data: session, update } = useSession();
+  const queryClient = useQueryClient();
   const isVietnamese = locale === 'vi';
-  const [accountForm, setAccountForm] = useState({ fullName: '', email: '', phone: '', password: '', avatarUrl: '' });
+  const [accountForm, setAccountForm] = useState({ fullName: '', email: '', username: '', phone: '', password: '', avatarUrl: '' });
+  const [avatarError, setAvatarError] = useState('');
 
   const { data: profile } = useQuery<User>({
     queryKey: ['me'],
@@ -26,6 +62,7 @@ export default function SettingsPage() {
     setAccountForm({
       fullName: profile.fullName || '',
       email: profile.email || '',
+      username: (profile as any).username || '',
       phone: profile.phone || '',
       password: '',
       avatarUrl: profile.avatarUrl || '',
@@ -36,47 +73,47 @@ export default function SettingsPage() {
     mutationFn: () => usersApi.updateMe({
       fullName: accountForm.fullName.trim(),
       email: accountForm.email.trim(),
+      username: accountForm.username.trim().toLowerCase(),
       phone: accountForm.phone.trim() || undefined,
       password: accountForm.password.trim() || undefined,
       avatarUrl: accountForm.avatarUrl || null,
     }).then((response) => response.data),
     onSuccess: async (user: User) => {
       setAccountForm((current) => ({ ...current, password: '' }));
+      // Ảnh đại diện được đọc từ hồ sơ (query 'me'), không đi qua phiên đăng nhập.
+      queryClient.setQueryData(['me'], user);
       await update({
         ...session,
         user: {
           ...(session?.user || {}),
           name: user.fullName,
           email: user.email,
-          image: user.avatarUrl || undefined,
           fullName: user.fullName,
-          avatarUrl: user.avatarUrl || undefined,
+          username: (user as any).username,
         },
       });
     },
   });
 
-  const handleAvatarChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== 'string') return;
-      setAccountForm((current) => ({ ...current, avatarUrl: result }));
-    };
-    reader.readAsDataURL(file);
+    setAvatarError('');
+    try {
+      const dataUrl = await shrinkImage(file);
+      setAccountForm((current) => ({ ...current, avatarUrl: dataUrl }));
+    } catch (error: any) {
+      setAvatarError(error?.message || (isVietnamese ? 'Không xử lý được ảnh này.' : 'Unable to process this image.'));
+    } finally {
+      // Cho phép chọn lại đúng tệp vừa rồi sau khi sửa lỗi.
+      event.target.value = '';
+    }
   };
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">{isVietnamese ? 'Cài đặt' : 'Settings'}</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          {isVietnamese
-            ? 'Tùy chỉnh ngôn ngữ hiển thị và xem nhanh thông tin tài khoản hiện tại.'
-            : 'Adjust display language and review your current account information.'}
-        </p>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
@@ -86,11 +123,6 @@ export default function SettingsPage() {
             <div className="rounded-xl bg-blue-50 p-3 text-blue-700"><Languages className="h-5 w-5" /></div>
             <div>
               <h2 className="text-lg font-semibold text-gray-900">{isVietnamese ? 'Ngôn ngữ hệ thống' : 'System language'}</h2>
-              <p className="text-sm text-gray-500">
-                {isVietnamese
-                  ? 'Bạn có thể chuyển đổi ngay giữa tiếng Việt và tiếng Anh.'
-                  : 'You can switch instantly between Vietnamese and English.'}
-              </p>
             </div>
           </div>
 
@@ -133,11 +165,6 @@ export default function SettingsPage() {
             <div className="rounded-xl bg-amber-50 p-3 text-amber-700">{theme === 'dark' ? <MoonStar className="h-5 w-5" /> : <SunMedium className="h-5 w-5" />}</div>
             <div>
               <h2 className="text-lg font-semibold text-gray-900">{isVietnamese ? 'Giao diện sáng / tối' : 'Light / dark theme'}</h2>
-              <p className="text-sm text-gray-500">
-                {isVietnamese
-                  ? 'Bạn có thể đổi giao diện để làm việc dễ hơn vào ban ngày hoặc ban đêm.'
-                  : 'Switch the interface to fit daytime or nighttime work more comfortably.'}
-              </p>
             </div>
           </div>
 
@@ -188,9 +215,6 @@ export default function SettingsPage() {
               <div className="rounded-xl bg-emerald-50 p-3 text-emerald-700"><UserRound className="h-5 w-5" /></div>
               <div>
                 <h2 className="text-lg font-semibold text-gray-900">{isVietnamese ? 'Tài khoản của bạn' : 'Your account'}</h2>
-                <p className="text-sm text-gray-500">
-                  {isVietnamese ? 'Bạn có thể thay ảnh đại diện, tên, email, số điện thoại và mật khẩu ngay tại đây.' : 'You can update your avatar, name, email, phone number, and password right here.'}
-                </p>
               </div>
             </div>
 
@@ -213,6 +237,7 @@ export default function SettingsPage() {
               <div className="grid gap-3 md:grid-cols-2">
                 <input value={accountForm.fullName} onChange={(event) => setAccountForm((current) => ({ ...current, fullName: event.target.value }))} placeholder={isVietnamese ? 'Họ và tên' : 'Full name'} className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
                 <input value={accountForm.email} onChange={(event) => setAccountForm((current) => ({ ...current, email: event.target.value }))} placeholder="Email" className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
+                <input value={accountForm.username} onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))} placeholder={isVietnamese ? 'Tên đăng nhập' : 'Username'} autoComplete="username" className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
                 <input value={accountForm.phone} onChange={(event) => setAccountForm((current) => ({ ...current, phone: event.target.value }))} placeholder={isVietnamese ? 'Số điện thoại' : 'Phone number'} className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
                 <input type="password" value={accountForm.password} onChange={(event) => setAccountForm((current) => ({ ...current, password: event.target.value }))} placeholder={isVietnamese ? 'Mật khẩu mới (để trống nếu không đổi)' : 'New password (leave blank to keep current)'} className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
               </div>
@@ -228,31 +253,21 @@ export default function SettingsPage() {
                 </button>
               </div>
 
+              {avatarError && <p className="text-sm text-rose-600">{avatarError}</p>}
               {updateProfile.isError && (
-                <p className="text-sm text-rose-600">{isVietnamese ? 'Không thể cập nhật tài khoản. Có thể email đã tồn tại.' : 'Unable to update account. The email may already exist.'}</p>
+                // Hiển thị đúng thông báo của máy chủ: đoán mò "email đã tồn tại"
+                // khiến người dùng đi sửa email trong khi lỗi thật nằm chỗ khác.
+                <p className="text-sm text-rose-600">
+                  {(() => {
+                    const detail = (updateProfile.error as any)?.response?.data?.message;
+                    const message = Array.isArray(detail) ? detail[0] : detail;
+                    return message || (isVietnamese ? 'Không thể cập nhật tài khoản.' : 'Unable to update account.');
+                  })()}
+                </p>
               )}
               {updateProfile.isSuccess && (
                 <p className="text-sm text-emerald-600">{isVietnamese ? 'Tài khoản đã được cập nhật.' : 'Your account has been updated.'}</p>
               )}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-violet-50 p-3 text-violet-700"><Globe2 className="h-5 w-5" /></div>
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">{isVietnamese ? 'Tác động của cài đặt' : 'Setting impact'}</h2>
-                <p className="text-sm text-gray-500">
-                  {isVietnamese
-                    ? 'Thanh điều hướng, header, trạng thái thu gọn menu và giao diện sáng tối sẽ áp dụng ngay sau khi bạn chuyển.'
-                    : 'Navigation, header, sidebar collapse state, and light/dark theme update immediately after you change them.'}
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-600">
-              {isVietnamese
-                ? `Trạng thái menu hiện tại: ${sidebarCollapsed ? 'Đang thu gọn' : 'Đang mở rộng'}.`
-                : `Current sidebar state: ${sidebarCollapsed ? 'Collapsed' : 'Expanded'}.`}
             </div>
           </div>
         </section>

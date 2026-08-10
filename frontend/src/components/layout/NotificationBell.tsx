@@ -1,15 +1,17 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Bell, Check, Mail } from 'lucide-react';
+import { Bell, CheckCheck, Mail } from 'lucide-react';
 import { notificationsApi } from '@/lib/api';
-import { formatDateTime } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/utils';
 
 type Notification = {
   id: string;
   subject: string;
   content: string;
   source: string;
+  link?: string | null;
   isRead: boolean;
   receivedAt: string;
 };
@@ -18,6 +20,7 @@ export function NotificationBell() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   const { data: notifications = [] } = useQuery<Notification[]>({
     queryKey: ['notifications'],
@@ -30,7 +33,22 @@ export function NotificationBell() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
   });
 
+  const markAllRead = useMutation({
+    mutationFn: () => notificationsApi.markAllRead().then((r) => r.data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+
   const unreadCount = notifications.filter((n) => !n.isRead).length;
+
+  // Mở bảng ra là coi như đã xem: trước đây phải bấm dấu tick trên từng dòng mới
+  // tắt được chấm đỏ, nên đọc hết rồi mà con số vẫn còn nguyên.
+  useEffect(() => {
+    if (!open || unreadCount === 0 || markAllRead.isPending) return;
+    // Chờ một nhịp để người dùng kịp thấy dòng nào đang là mới (nền xanh nhạt).
+    const timer = setTimeout(() => markAllRead.mutate(), 1500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, unreadCount]);
 
   // Đóng dropdown khi click ra ngoài
   useEffect(() => {
@@ -40,6 +58,14 @@ export function NotificationBell() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  const handleClick = (notification: Notification) => {
+    if (!notification.isRead) markRead.mutate(notification.id);
+    if (notification.link) {
+      setOpen(false);
+      router.push(notification.link);
+    }
+  };
 
   return (
     <div className="relative" ref={ref}>
@@ -61,9 +87,14 @@ export function NotificationBell() {
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-slate-800">
             <p className="font-semibold text-gray-900 dark:text-slate-100">Thông báo</p>
             {unreadCount > 0 && (
-              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700">
-                {unreadCount} chưa đọc
-              </span>
+              <button
+                onClick={() => markAllRead.mutate()}
+                disabled={markAllRead.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:opacity-50"
+              >
+                <CheckCheck className="h-3.5 w-3.5" />
+                Đánh dấu tất cả đã đọc
+              </button>
             )}
           </div>
 
@@ -75,9 +106,10 @@ export function NotificationBell() {
               </div>
             ) : (
               notifications.map((n) => (
-                <div
+                <button
                   key={n.id}
-                  className={`flex items-start gap-3 border-b border-gray-50 px-4 py-3 transition dark:border-slate-800 ${
+                  onClick={() => handleClick(n)}
+                  className={`flex w-full items-start gap-3 border-b border-gray-50 px-4 py-3 text-left transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60 ${
                     n.isRead ? 'bg-white dark:bg-slate-900' : 'bg-blue-50/60 dark:bg-sky-500/5'
                   }`}
                 >
@@ -87,18 +119,10 @@ export function NotificationBell() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-gray-900 dark:text-slate-100">{n.subject}</p>
                     <p className="mt-0.5 text-xs text-gray-600 dark:text-slate-400">{n.content}</p>
-                    <p className="mt-1 text-[11px] text-gray-400">{formatDateTime(n.receivedAt)}</p>
+                    <p className="mt-1 text-[11px] text-gray-400">{formatRelativeTime(n.receivedAt)}</p>
                   </div>
-                  {!n.isRead && (
-                    <button
-                      onClick={() => markRead.mutate(n.id)}
-                      className="shrink-0 rounded-lg p-1.5 text-gray-400 transition hover:bg-emerald-100 hover:text-emerald-600"
-                      title="Đánh dấu đã đọc"
-                    >
-                      <Check className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
+                  {!n.isRead && <span aria-hidden className="mt-2 h-2 w-2 shrink-0 rounded-full bg-blue-500" />}
+                </button>
               ))
             )}
           </div>

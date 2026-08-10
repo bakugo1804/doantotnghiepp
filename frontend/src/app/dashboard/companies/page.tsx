@@ -56,6 +56,8 @@ export default function CompaniesPage() {
     onSuccess: () => {
       setEditingCompany(null);
       queryClient.invalidateQueries({ queryKey: ['companies'] });
+      // Đổi tên công ty là đổi luôn tên trên các tờ khai đang mang tên cũ.
+      queryClient.invalidateQueries({ queryKey: ['customs'] });
     },
   });
 
@@ -101,11 +103,6 @@ export default function CompaniesPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">{isVietnamese ? 'Danh bạ công ty' : 'Company directory'}</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          {isVietnamese
-            ? 'Trang riêng để theo dõi tên doanh nghiệp, tần suất xuất hiện, và cũng là nơi thêm công ty mới.'
-            : 'A dedicated page to review company names, activity frequency, and also add new companies.'}
-        </p>
       </div>
 
       {isAdmin && (
@@ -114,7 +111,6 @@ export default function CompaniesPage() {
             <div className="rounded-xl bg-blue-50 p-3 text-blue-700"><Plus className="h-5 w-5" /></div>
             <div>
               <h2 className="text-lg font-semibold text-gray-900">{isVietnamese ? 'Thêm công ty mới' : 'Add new company'}</h2>
-              <p className="text-sm text-gray-500">{isVietnamese ? 'Từ giờ bạn thêm doanh nghiệp ngay tại đây, không cần chờ phát sinh tờ khai.' : 'You can now add companies here without waiting for a declaration to exist.'}</p>
             </div>
           </div>
 
@@ -208,27 +204,24 @@ export default function CompaniesPage() {
 
             {isAdmin && (
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-4">
-                {company.isDirectoryEntry ? (
-                  <>
-                    <button
-                      onClick={() => openEdit(company)}
-                      className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-200"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                      {isVietnamese ? 'Sửa' : 'Edit'}
-                    </button>
-                    <button
-                      onClick={() => handleDelete(company)}
-                      className="inline-flex items-center gap-2 rounded-lg bg-rose-100 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-200"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      {isVietnamese ? 'Xóa' : 'Delete'}
-                    </button>
-                  </>
-                ) : (
-                  <p className="text-xs text-amber-700">
-                    {isVietnamese ? 'Tên này sinh ra từ dữ liệu tờ khai, hãy tạo bản ghi công ty để quản trị chi tiết.' : 'This name is derived from declarations, create a directory entry to manage it in detail.'}
-                  </p>
+                {/* Công ty sinh ra từ tờ khai cũng sửa được: lần lưu đầu tiên sẽ
+                    tạo luôn bản ghi danh bạ cho nó. Chỉ nút Xóa là dành riêng cho
+                    bản ghi danh bạ, vì công ty suy ra không có gì để xóa. */}
+                <button
+                  onClick={() => openEdit(company)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-200"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  {isVietnamese ? 'Sửa' : 'Edit'}
+                </button>
+                {company.isDirectoryEntry && (
+                  <button
+                    onClick={() => handleDelete(company)}
+                    className="inline-flex items-center gap-2 rounded-lg bg-rose-100 px-3 py-1.5 text-xs font-medium text-rose-700 transition hover:bg-rose-200"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {isVietnamese ? 'Xóa' : 'Delete'}
+                  </button>
                 )}
               </div>
             )}
@@ -266,7 +259,11 @@ export default function CompaniesPage() {
               <button onClick={() => setEditingCompany(null)} className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100">
                 {isVietnamese ? 'Hủy' : 'Cancel'}
               </button>
-              {updateCompany.isError && <p className="text-sm text-rose-600">{isVietnamese ? 'Không thể cập nhật công ty.' : 'Unable to update company.'}</p>}
+              {updateCompany.isError && (
+                <p className="text-sm text-rose-600">
+                  {(updateCompany.error as any)?.response?.data?.message || (isVietnamese ? 'Không thể cập nhật công ty.' : 'Unable to update company.')}
+                </p>
+              )}
             </div>
           </div>
         </div>

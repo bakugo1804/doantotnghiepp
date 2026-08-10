@@ -68,17 +68,16 @@ export class UsersController {
   @Delete(':id')
   async remove(@Param('id') id: string, @Request() req) {
     const user = req.user;
+    // Ràng buộc tự xoá và "quản trị viên cuối cùng" nằm trong service nên áp dụng
+    // cho cả ADMIN, không riêng DIRECTOR như trước.
     if (user.role === 'ADMIN') {
-      return this.usersService.remove(id);
+      return this.usersService.remove(id, user.sub);
     }
-    
+
     const targetUser = await this.usersService.findOne(id);
     if (targetUser.companyId !== user.companyId) {
       throw new ForbiddenException('Bạn không có quyền xóa nhân viên này');
     }
-    if (targetUser.id === user.sub) {
-      throw new ForbiddenException('Bạn không thể tự xóa tài khoản của chính mình');
-    }
-    return this.usersService.remove(id);
+    return this.usersService.remove(id, user.sub);
   }
 }

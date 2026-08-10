@@ -1,20 +1,27 @@
 'use client';
 import { useRouter, useParams } from 'next/navigation';
-import { useCustomsOne, useUpdateCustomsStatus, useDeleteCustoms } from '@/hooks/useCustoms';
-import { formatDate, formatCurrency, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
-import { ArrowLeft, Download, FileText, Trash2, Loader2, CheckCircle } from 'lucide-react';
+import { useCustomsOne, useCustomsTransitions, useUpdateCustomsStatus, useDeleteCustoms } from '@/hooks/useCustoms';
+import { formatDate, formatDateTime, formatCurrency, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { ArrowLeft, ChevronRight, Download, FileText, GitBranch, History, Trash2, Loader2, CheckCircle } from 'lucide-react';
 import { useState } from 'react';
 import { reportsApi, downloadBlob } from '@/lib/api';
+import { RecordTasksPanel } from '@/components/customs/RecordTasksPanel';
 import type { CustomsStatus, Journey } from '@/types';
+
+/** Đường đi thuận lợi của hồ sơ; REJECTED là nhánh rẽ nên không nằm trong dãy này. */
+const WORKFLOW_STEPS = ['DRAFT', 'SUBMITTED', 'PROCESSING', 'APPROVED', 'COMPLETED'] as const;
 
 export default function CustomsDetailPage() {
   const router = useRouter();
   const { id } = useParams();
-  const [newStatus, setNewStatus] = useState<CustomsStatus | ''>('');
-  
+  const [statusNote, setStatusNote] = useState('');
+  const [statusError, setStatusError] = useState('');
+
   const { data: record, isLoading } = useCustomsOne(id as string);
+  const { data: transitions } = useCustomsTransitions(id as string);
   const updateStatus = useUpdateCustomsStatus();
   const deleteCustoms = useDeleteCustoms();
+  const nextSteps = transitions?.next ?? [];
 
   const handleExport = async () => {
     if (!record) return;
@@ -42,10 +49,15 @@ export default function CustomsDetailPage() {
     router.push('/dashboard/customs');
   };
 
-  const handleStatusChange = async () => {
-    if (!newStatus) return;
-    await updateStatus.mutateAsync({ id: id as string, status: newStatus });
-    setNewStatus('');
+  const handleStatusChange = async (status: CustomsStatus) => {
+    setStatusError('');
+    try {
+      await updateStatus.mutateAsync({ id: id as string, status, note: statusNote.trim() || undefined });
+      setStatusNote('');
+    } catch (error: any) {
+      // Hiển thị đúng lý do bị chặn (sai luồng hay thiếu quyền) thay vì im lặng.
+      setStatusError(error?.response?.data?.message || 'Không thể cập nhật trạng thái');
+    }
   };
 
   if (isLoading) return <div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-blue-600" /></div>;
@@ -80,21 +92,119 @@ export default function CustomsDetailPage() {
         </div>
       </div>
 
-      {/* Status change */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="font-semibold text-gray-800 mb-3">Cập nhật trạng thái</h2>
-        <div className="flex gap-3">
-          <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as CustomsStatus | '')} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">-- Chọn trạng thái --</option>
-            {['DRAFT', 'SUBMITTED', 'PROCESSING', 'APPROVED', 'REJECTED', 'COMPLETED'].map((s) => (
-              <option key={s} value={s}>{STATUS_LABELS[s]?.label}</option>
-            ))}
-          </select>
-          <button onClick={handleStatusChange} disabled={!newStatus || updateStatus.isPending} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium">
-            {updateStatus.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Cập nhật'}
-          </button>
+      {/* Quy trình xử lý: chỉ hiện những bước hợp lệ với trạng thái hiện tại và
+          vai trò người dùng, thay vì cho chọn tuỳ ý trong danh sách đầy đủ. */}
+      <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6">
+        <div className="mb-4 flex items-center gap-2">
+          <GitBranch className="h-5 w-5 text-blue-600" />
+          <h2 className="font-semibold text-gray-800">Quy trình xử lý</h2>
         </div>
+
+        <ol className="mb-5 flex flex-wrap items-center gap-x-1 gap-y-2 text-xs">
+          {WORKFLOW_STEPS.map((step, index) => {
+            const currentIndex = WORKFLOW_STEPS.indexOf(record.status as any);
+            const done = currentIndex >= 0 && index <= currentIndex;
+            const isCurrent = record.status === step;
+            return (
+              <li key={step} className="flex items-center gap-1">
+                <span
+                  className={`rounded-full px-2.5 py-1 font-medium ${
+                    isCurrent
+                      ? 'bg-blue-600 text-white'
+                      : done
+                        ? 'bg-blue-50 text-blue-700'
+                        : 'bg-slate-100 text-slate-400'
+                  }`}
+                >
+                  {STATUS_LABELS[step]?.label}
+                </span>
+                {index < WORKFLOW_STEPS.length - 1 && <ChevronRight className="h-3.5 w-3.5 text-slate-300" />}
+              </li>
+            );
+          })}
+          {record.status === 'REJECTED' && (
+            <li className="ml-2 rounded-full bg-rose-100 px-2.5 py-1 font-medium text-rose-700">Từ chối</li>
+          )}
+        </ol>
+
+        {nextSteps.length === 0 ? (
+          <p className="rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            {record.status === 'COMPLETED'
+              ? 'Hồ sơ đã hoàn thành, không còn bước xử lý nào.'
+              : 'Vai trò của bạn không có bước xử lý nào khả dụng ở trạng thái này.'}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <input
+              value={statusNote}
+              onChange={(event) => setStatusNote(event.target.value)}
+              placeholder="Ghi chú cho bước xử lý (không bắt buộc)"
+              className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+            <div className="flex flex-wrap gap-2">
+              {nextSteps.map((step: { status: CustomsStatus; label: string }) => (
+                <button
+                  key={step.status}
+                  onClick={() => handleStatusChange(step.status)}
+                  disabled={updateStatus.isPending}
+                  className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition disabled:opacity-50 ${
+                    step.status === 'REJECTED' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                >
+                  {updateStatus.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                  {step.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {statusError && (
+          <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{statusError}</p>
+        )}
       </div>
+
+      {/* Nhân sự phụ trách + giao việc ngay tại đây */}
+      <RecordTasksPanel recordId={record.id} recordNo={record.recordNo} />
+
+      {/* Nhật ký xử lý */}
+      {record.statusHistory && record.statusHistory.length > 0 && (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <History className="h-5 w-5 text-slate-500" />
+            <h2 className="font-semibold text-gray-800">Nhật ký xử lý</h2>
+          </div>
+          <ol className="space-y-0">
+            {record.statusHistory.map((entry: any, index: number) => (
+              <li key={entry.id} className="relative flex gap-4 pb-5 last:pb-0">
+                {index < record.statusHistory.length - 1 && (
+                  <span aria-hidden className="absolute left-[7px] top-4 h-full w-px bg-slate-200" />
+                )}
+                <span
+                  aria-hidden
+                  className="relative mt-1 h-3.5 w-3.5 shrink-0 rounded-full border-2 border-white ring-2"
+                  style={{ background: index === 0 ? '#2a78d6' : '#cbd5e1', boxShadow: '0 0 0 2px white' }}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-slate-900">
+                    {entry.fromStatus ? (
+                      <>
+                        <span className="text-slate-500">{STATUS_LABELS[entry.fromStatus]?.label}</span>
+                        <span className="mx-1.5 text-slate-400">→</span>
+                      </>
+                    ) : null}
+                    <span className="font-medium">{STATUS_LABELS[entry.toStatus]?.label}</span>
+                  </p>
+                  {entry.note && <p className="mt-0.5 text-sm text-slate-600">{entry.note}</p>}
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    {entry.changedBy?.fullName ?? 'Hệ thống'} · {formatDateTime(entry.createdAt)}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       {/* Info Grid */}
       <div className="grid grid-cols-2 gap-6 mb-6">

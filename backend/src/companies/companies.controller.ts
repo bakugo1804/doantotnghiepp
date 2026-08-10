@@ -27,8 +27,8 @@ export class CompaniesController {
   @ApiOperation({ summary: 'Cập nhật công ty' })
   @Roles('ADMIN')
   @Patch(':id')
-  update(@Param('id') id: string, @Body() body: any) {
-    return this.companiesService.update(id, body);
+  update(@Param('id') id: string, @Body() body: any, @Request() req) {
+    return this.companiesService.update(id, body, req.user.sub);
   }
 
   @ApiOperation({ summary: 'Xóa công ty' })

@@ -22,6 +22,27 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
+
+    /* === Data-viz tokens ===
+       Bộ màu này đã được kiểm chứng bằng validator (lightness band, chroma floor,
+       tách biệt cho người mù màu protan/deutan/tritan, tương phản nền).
+       Thứ tự trạng thái là thứ tự xếp chồng trên biểu đồ — đổi màu tuỳ tiện sẽ
+       phá vỡ khoảng cách CVD giữa các cặp liền kề. */
+    --viz-draft: #94a3b8;
+    --viz-submitted: #2a78d6;
+    --viz-processing: #eda100;
+    --viz-approved: #1baf7a;
+    --viz-completed: #4a3aa7;
+    --viz-rejected: #e34948;
+
+    --viz-accent: #2a78d6;
+    --viz-muted-mark: #cbd5e1;
+    --viz-surface: #ffffff;
+    --viz-grid: #e2e8f0;
+    --viz-axis: #cbd5e1;
+    --viz-ink-muted: #64748b;
+    --viz-positive: #006300;
+    --viz-negative: #c2352f;
   }
   .dark {
     --background: 222.2 84% 4.9%;
@@ -41,6 +62,24 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 224.3 76.3% 48%;
+
+    /* Bậc màu dành riêng cho nền tối — không phải bản đảo ngược tự động của
+       light mode, mà là bộ màu được chọn và kiểm chứng lại trên nền slate-900. */
+    --viz-draft: #64748b;
+    --viz-submitted: #3987e5;
+    --viz-processing: #c98500;
+    --viz-approved: #199e70;
+    --viz-completed: #9085e9;
+    --viz-rejected: #e66767;
+
+    --viz-accent: #3987e5;
+    --viz-muted-mark: #334155;
+    --viz-surface: #0f172a;
+    --viz-grid: #1e293b;
+    --viz-axis: #334155;
+    --viz-ink-muted: #94a3b8;
+    --viz-positive: #0ca30c;
+    --viz-negative: #e66767;
   }
 }
 

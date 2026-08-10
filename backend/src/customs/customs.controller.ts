@@ -46,8 +46,10 @@ export class CustomsController {
     });
   }
 
+  // Không giới hạn vai trò: dữ liệu tờ khai vốn dùng chung toàn tổ chức (xem
+  // toRecordScope), nên chặn STAFF/VIEWER xem thống kê của chính dữ liệu họ
+  // đọc được ở GET /customs là mâu thuẫn. Phạm vi vẫn do toRecordScope quyết định.
   @ApiOperation({ summary: 'Thống kê tổng quan' })
-  @Roles('ADMIN', 'DIRECTOR')
   @Get('stats')
   getStats(@Request() req) {
     return this.customsService.getStats(req.user);
@@ -71,11 +73,24 @@ export class CustomsController {
     return this.customsService.findOne(id, req.user);
   }
 
-  @ApiOperation({ summary: 'Cập nhật trạng thái tờ khai' })
+  @ApiOperation({ summary: 'Các bước xử lý tiếp theo mà vai trò hiện tại được phép làm' })
+  @Get(':id/transitions')
+  getTransitions(@Param('id') id: string, @Request() req) {
+    return this.customsService.getAvailableTransitions(id, req.user);
+  }
+
+  // Quyền chi tiết theo từng bước nằm trong status-workflow.ts; guard ở đây chỉ
+  // loại VIEWER ra khỏi mọi thao tác đổi trạng thái.
+  @ApiOperation({ summary: 'Cập nhật trạng thái tờ khai theo quy trình duyệt' })
   @Roles('ADMIN', 'DIRECTOR', 'STAFF')
   @Patch(':id/status')
-  updateStatus(@Param('id') id: string, @Body('status') status: string, @Request() req) {
-    return this.customsService.updateStatus(id, status, req.user);
+  updateStatus(
+    @Param('id') id: string,
+    @Body('status') status: string,
+    @Body('note') note: string | undefined,
+    @Request() req,
+  ) {
+    return this.customsService.updateStatus(id, status, req.user, note);
   }
 
   @ApiOperation({ summary: 'Xóa tờ khai' })

@@ -27,6 +27,26 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * Đánh dấu toàn bộ đã đọc.
+   *
+   * Giao diện chỉ có nút tick trên từng dòng, nên muốn tắt chấm đỏ phải bấm lần
+   * lượt từng thông báo - đọc xong rồi mà số đỏ vẫn còn nguyên.
+   */
+  async markAllRead(userId: string) {
+    const result = await this.prisma.notification.updateMany({
+      where: { userId, isRead: false },
+      data: { isRead: true },
+    });
+    return { updated: result.count };
+  }
+
+  /** Đếm số chưa đọc, dùng cho chấm đỏ trên chuông. */
+  async unreadCount(userId: string) {
+    const count = await this.prisma.notification.count({ where: { userId, isRead: false } });
+    return { count };
+  }
+
   async sendToGmail(userId: string, subject: string, content: string) {
     const host = this.config.get<string>('SMTP_HOST') || 'smtp.gmail.com';
     const port = Number(this.config.get<string>('SMTP_PORT') || 587);

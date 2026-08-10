@@ -1,13 +1,25 @@
 'use client';
 import { signOut } from 'next-auth/react';
+import { useQuery } from '@tanstack/react-query';
 import { Languages, LogOut, MoonStar, PanelLeft, SunMedium, User } from 'lucide-react';
 import { useAppPreferences } from '@/components/settings/AppPreferencesProvider';
 import { useLocale } from '@/components/settings/LocaleProvider';
 import { NotificationBell } from '@/components/layout/NotificationBell';
+import { usersApi } from '@/lib/api';
+import type { User as UserProfile } from '@/types';
 
 export function Header({ user }: { user: any }) {
   const { locale, toggleLocale } = useLocale();
   const { theme, toggleTheme, toggleSidebar } = useAppPreferences();
+
+  // Ảnh đại diện không nằm trong phiên đăng nhập (xem lý do ở route NextAuth),
+  // nên lấy từ hồ sơ người dùng. Dùng chung queryKey với trang Cài đặt để đổi
+  // ảnh xong là header cập nhật ngay.
+  const { data: profile } = useQuery<UserProfile>({
+    queryKey: ['me'],
+    queryFn: () => usersApi.getMe().then((response) => response.data),
+  });
+  const avatar = profile?.avatarUrl || user?.image || user?.avatarUrl;
   const text = locale === 'vi'
     ? {
         greeting: 'Xin chào,',
@@ -65,9 +77,9 @@ export function Header({ user }: { user: any }) {
         <NotificationBell />
 
         <div className="flex items-center gap-2 border-l border-slate-200 pl-3 dark:border-slate-800">
-          {user?.image || user?.avatarUrl ? (
+          {avatar ? (
             <img
-              src={user?.image || user?.avatarUrl}
+              src={avatar}
               alt={user?.name || user?.fullName || text.fallbackUser}
               className="h-9 w-9 rounded-full border border-white/40 object-cover shadow-sm"
             />

@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { aiApi, reportsApi, downloadBlob, customsApi } from '@/lib/api';
+import { COUNTRIES, CURRENCIES, UNITS } from '@/lib/reference-data';
 import { FileSpreadsheet, FileText, Loader2, CheckCircle, Plus, Trash2 } from 'lucide-react';
 
 type Step = 'upload' | 'preview' | 'done';
@@ -28,8 +29,10 @@ type CustomsForm = {
   journeys: JourneyForm[];
   exporterName: string;
   exporterAddress?: string;
+  exporterCountry: string;
   importerName: string;
   importerAddress?: string;
+  importerCountry: string;
   invoiceNo?: string;
   billOfLading?: string;
   containerNo?: string;
@@ -92,15 +95,19 @@ export function ImportExcel() {
         destination: j.destination || '',
       }));
       setForm({
-        recordNo: '',
+        // Số tờ khai đọc được từ file phải giữ nguyên: đây là mã do cơ quan hải
+        // quan cấp, bỏ đi rồi để hệ thống tự sinh là làm sai định danh hồ sơ.
+        recordNo: data.recordNo || '',
         entryDate: toDateInput(data.entryDate) || new Date().toISOString().slice(0, 10),
         exitDate: toDateInput(data.exitDate),
         flightNo: data.flightNo || '',
         journeys: journeys.length > 0 ? journeys : [{ legNumber: 1, transportType: (data.transportType || 'ROAD') as TransportType, origin: '', destination: '' }],
         exporterName: data.exporterName || '',
         exporterAddress: data.exporterAddress || '',
+        exporterCountry: data.exporterCountry || 'CN',
         importerName: data.importerName || '',
         importerAddress: data.importerAddress || '',
+        importerCountry: data.importerCountry || 'VN',
         invoiceNo: data.invoiceNo || '',
         billOfLading: data.billOfLading || '',
         containerNo: data.containerNo || '',
@@ -208,7 +215,11 @@ export function ImportExcel() {
         leg1Origin: journeys[0].origin,
         leg1Destination: journeys[0].destination,
         exporterName: form.exporterName.trim(),
+        exporterCountry: form.exporterCountry,
         importerName: form.importerName.trim(),
+        // Thuế VAT và phí vận chuyển được tính theo cặp quốc gia này, bỏ trống
+        // thì backend mặc định VN - VN và ra con số sai hoàn toàn.
+        importerCountry: form.importerCountry,
         currency: form.currency,
         materials: form.materials.map((m, i) => ({
           itemNo: i + 1,
@@ -270,7 +281,6 @@ export function ImportExcel() {
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="font-medium text-blue-800">📋 Tải mẫu tờ khai hải quan chuẩn</p>
-          <p className="text-blue-600 text-sm">Đây là mẫu cố định. Điền dữ liệu vào ô bên phải mỗi nhãn (có bảng hành trình & hàng hóa nhiều dòng) rồi tải lên.</p>
         </div>
         <div className="flex gap-2">
           <button onClick={downloadTemplate} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm">
@@ -312,8 +322,7 @@ export function ImportExcel() {
 
       {step === 'preview' && form && (
         <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-800 mb-1">📝 Kiểm tra & chỉnh sửa dữ liệu</h2>
-          <p className="text-sm text-gray-500 mb-4">Bạn có thể sửa các trường bên dưới trước khi tạo tờ khai.</p>
+          <h2 className="font-semibold text-gray-800 mb-4">📝 Kiểm tra & chỉnh sửa dữ liệu</h2>
 
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mb-6">
             <div>
@@ -327,6 +336,10 @@ export function ImportExcel() {
               <input type="date" value={form.entryDate} onChange={(e) => setField('entryDate', e.target.value)} className={inputCls} />
             </div>
             <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày xuất cảnh</label>
+              <input type="date" value={form.exitDate || ''} onChange={(e) => setField('exitDate', e.target.value)} className={inputCls} />
+            </div>
+            <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Số hiệu chuyến (bay/tàu)</label>
               <input value={form.flightNo} onChange={(e) => setField('flightNo', e.target.value)} className={inputCls} />
             </div>
@@ -335,19 +348,54 @@ export function ImportExcel() {
               <input value={form.exporterName} onChange={(e) => setField('exporterName', e.target.value)} className={inputCls} />
             </div>
             <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Nước xuất khẩu</label>
+              <select value={form.exporterCountry} onChange={(e) => setField('exporterCountry', e.target.value)} className={inputCls}>
+                {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.code})</option>)}
+              </select>
+            </div>
+            <div className="lg:col-span-3">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Địa chỉ nhà xuất khẩu</label>
+              <input value={form.exporterAddress || ''} onChange={(e) => setField('exporterAddress', e.target.value)} className={inputCls} />
+            </div>
+            <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Nhà nhập khẩu</label>
               <input value={form.importerName} onChange={(e) => setField('importerName', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Tiền tệ</label>
-              <select value={form.currency} onChange={(e) => setField('currency', e.target.value)} className={inputCls}>
-                <option value="USD">USD</option>
-                <option value="VND">VND</option>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Nước nhập khẩu</label>
+              <select value={form.importerCountry} onChange={(e) => setField('importerCountry', e.target.value)} className={inputCls}>
+                {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.code})</option>)}
               </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Thuế suất VAT (%)</label>
               <input type="number" value={form.vatRate ?? ''} onChange={(e) => setField('vatRate', e.target.value === '' ? undefined : Number(e.target.value))} className={inputCls} />
+            </div>
+            <div className="lg:col-span-3">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Địa chỉ nhà nhập khẩu</label>
+              <input value={form.importerAddress || ''} onChange={(e) => setField('importerAddress', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Số hóa đơn</label>
+              <input value={form.invoiceNo || ''} onChange={(e) => setField('invoiceNo', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Số vận đơn</label>
+              <input value={form.billOfLading || ''} onChange={(e) => setField('billOfLading', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Số container</label>
+              <input value={form.containerNo || ''} onChange={(e) => setField('containerNo', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Tiền tệ</label>
+              <select value={form.currency} onChange={(e) => setField('currency', e.target.value)} className={inputCls}>
+                {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>)}
+              </select>
+            </div>
+            <div className="lg:col-span-2">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ghi chú</label>
+              <input value={form.notes || ''} onChange={(e) => setField('notes', e.target.value)} className={inputCls} />
             </div>
           </div>
 
@@ -385,7 +433,7 @@ export function ImportExcel() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50">
-                  {['STT', 'Mã HS', 'Mô tả', 'SL', 'ĐV', 'Đơn giá', 'Xuất xứ', ''].map((h) => (
+                  {['STT', 'Mã HS', 'Mô tả', 'SL', 'ĐV', 'Đơn giá', 'Xuất xứ', 'Trọng lượng (kg)', ''].map((h) => (
                     <th key={h} className="text-left px-2 py-2 text-xs font-semibold text-gray-600">{h}</th>
                   ))}
                 </tr>
@@ -397,9 +445,20 @@ export function ImportExcel() {
                     <td className="px-2 py-1.5"><input value={m.hsCode} onChange={(e) => setMaterial(i, 'hsCode', e.target.value)} className="w-20 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
                     <td className="px-2 py-1.5"><input value={m.description} onChange={(e) => setMaterial(i, 'description', e.target.value)} className="w-48 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
                     <td className="px-2 py-1.5"><input type="number" value={m.quantity} onChange={(e) => setMaterial(i, 'quantity', Number(e.target.value))} className="w-16 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
-                    <td className="px-2 py-1.5"><input value={m.unit} onChange={(e) => setMaterial(i, 'unit', e.target.value)} className="w-16 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
+                    <td className="px-2 py-1.5">
+                      <select value={m.unit} onChange={(e) => setMaterial(i, 'unit', e.target.value)} className="w-24 rounded border border-gray-300 px-2 py-1 text-sm">
+                        {UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+                        {m.unit && !UNITS.includes(m.unit as any) && <option value={m.unit}>{m.unit}</option>}
+                      </select>
+                    </td>
                     <td className="px-2 py-1.5"><input type="number" value={m.unitPrice} onChange={(e) => setMaterial(i, 'unitPrice', Number(e.target.value))} className="w-24 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
-                    <td className="px-2 py-1.5"><input value={m.origin} onChange={(e) => setMaterial(i, 'origin', e.target.value)} className="w-16 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
+                    <td className="px-2 py-1.5">
+                      <select value={m.origin || ''} onChange={(e) => setMaterial(i, 'origin', e.target.value)} className="w-28 rounded border border-gray-300 px-2 py-1 text-sm">
+                        <option value="">—</option>
+                        {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1.5"><input type="number" step="0.01" value={m.weight ?? ''} onChange={(e) => setMaterial(i, 'weight', e.target.value === '' ? undefined : Number(e.target.value))} className="w-24 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
                     <td className="px-2 py-1.5">
                       <button onClick={() => removeMaterial(i)} className="rounded p-1.5 text-rose-500 transition hover:bg-rose-50" title="Xóa dòng">
                         <Trash2 className="h-4 w-4" />
@@ -408,7 +467,7 @@ export function ImportExcel() {
                   </tr>
                 ))}
                 {form.materials.length === 0 && (
-                  <tr><td colSpan={8} className="px-2 py-6 text-center text-gray-400">Chưa có vật tư. Bấm "Thêm dòng" để thêm.</td></tr>
+                  <tr><td colSpan={9} className="px-2 py-6 text-center text-gray-400">Chưa có vật tư.</td></tr>
                 )}
               </tbody>
             </table>

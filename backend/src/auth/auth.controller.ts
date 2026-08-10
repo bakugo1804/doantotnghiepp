@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, UseGuards, Request } from '@nestjs/common';
+import { Controller, Post, Get, Body, Query, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -20,6 +20,12 @@ export class AuthController {
   @Get('companies')
   listCompanies() {
     return this.authService.listCompanyOptions();
+  }
+
+  @ApiOperation({ summary: 'Kiểm tra tên đăng nhập còn trống không' })
+  @Get('check-username')
+  checkUsername(@Query('username') username: string) {
+    return this.authService.checkUsername(username || '');
   }
 
   @ApiOperation({ summary: 'Đăng nhập' })

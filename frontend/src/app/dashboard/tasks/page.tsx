@@ -117,7 +117,6 @@ export default function TasksPage() {
             <div className="rounded-xl bg-blue-50 p-3 text-blue-700"><CalendarDays className="h-5 w-5" /></div>
             <div>
               <h2 className="text-lg font-semibold text-gray-900">{isVietnamese ? 'Bộ lọc & tạo nhiệm vụ' : 'Filters & task creation'}</h2>
-              <p className="text-sm text-gray-500">{isVietnamese ? 'Chọn ngày làm việc và phân công cho từng người.' : 'Choose work date and assign tasks to each user.'}</p>
             </div>
           </div>
 

@@ -16,6 +16,19 @@ export class NotificationsController {
     return this.notificationsService.list(req.user.sub);
   }
 
+  @ApiOperation({ summary: 'Số thông báo chưa đọc' })
+  @Get('unread-count')
+  unreadCount(@Request() req) {
+    return this.notificationsService.unreadCount(req.user.sub);
+  }
+
+  // Đặt trên :id/read để "read-all" không bị khớp nhầm thành id = "read-all".
+  @ApiOperation({ summary: 'Đánh dấu tất cả đã đọc' })
+  @Patch('read-all')
+  markAllRead(@Request() req) {
+    return this.notificationsService.markAllRead(req.user.sub);
+  }
+
   @ApiOperation({ summary: 'Đánh dấu thông báo đã đọc' })
   @Patch(':id/read')
   markRead(@Param('id') id: string, @Request() req: any) {

@@ -20,6 +20,11 @@ export default function AdminPage() {
   const activeUsers = users.filter((user: any) => user.isActive).length;
   const directorUsers = users.filter((user: any) => user.role === 'DIRECTOR').length;
   const lockedUsers = users.length - activeUsers;
+  // Đếm theo lần đăng nhập thật trong 7 ngày, thay vì đếm tài khoản chưa bị khoá.
+  const recentlyActiveUsers = users.filter((user: any) => {
+    const last = user.lastLoginAt;
+    return last && Date.now() - new Date(last).getTime() < 7 * 86400000;
+  }).length;
   const processingCount = stats?.byStatus?.find((item: any) => item.status === 'PROCESSING')?._count ?? 0;
   const approvedCount = stats?.byStatus?.find((item: any) => item.status === 'APPROVED')?._count ?? 0;
   const recentUsers = users.slice(0, 5);
@@ -28,7 +33,7 @@ export default function AdminPage() {
     { label: 'Tổng tờ khai', value: stats?.total ?? 0, icon: BarChart3, tone: 'bg-blue-500', hint: 'Số tờ khai trong hệ thống' },
     { label: 'Đang xử lý', value: processingCount, icon: FileClock, tone: 'bg-amber-500', hint: 'Cần điều phối ưu tiên' },
     { label: 'Đã duyệt', value: approvedCount, icon: ShieldCheck, tone: 'bg-emerald-500', hint: 'Tờ khai đã thông quan' },
-    { label: 'Tài khoản giám đốc', value: directorUsers, icon: Users, tone: 'bg-violet-500', hint: 'Giám đốc đang quản lý công ty' },
+    { label: 'Hoạt động 7 ngày', value: recentlyActiveUsers, icon: Users, tone: 'bg-violet-500', hint: 'Tài khoản thực sự có đăng nhập' },
   ];
 
   return (

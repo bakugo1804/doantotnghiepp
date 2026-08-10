@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import * as ExcelJS from 'exceljs';
@@ -12,11 +12,27 @@ import {
   MATERIAL_COLUMNS,
   MaterialFieldKey,
   JourneyFieldKey,
+  isPlaceholderText,
   normalizeTransport,
 } from '../common/customs-form';
+import { normalizeCountryCode } from '../common/countries';
 
 // pdf-parse (thuần JS) — trích xuất text từ PDF có lớp text
 const pdfParse = require('pdf-parse');
+
+/** Đủ dài để Ollama nạp model từ đầu ở lần hỏi đầu tiên. */
+const AI_TIMEOUT_MS = 150_000;
+
+/**
+ * Số lượt hội thoại cũ gửi kèm.
+ *
+ * Giữ lại quá nhiều lịch sử khiến model 3B bám vào chủ đề cũ và trả lời lạc đề:
+ * người dùng hỏi một đằng, model vẫn tiếp tục câu chuyện trước đó.
+ */
+const CHAT_HISTORY_LIMIT = 4;
+
+/** Quá mốc này coi như phiên trò chuyện mới, không gửi kèm lịch sử cũ nữa. */
+const CHAT_SESSION_WINDOW_MS = 30 * 60 * 1000;
 
 type ParsedMaterial = {
   itemNo: number;
@@ -37,6 +53,7 @@ type ParsedJourney = {
 };
 
 type ParsedForm = {
+  recordNo?: string;
   entryDate: string;
   exitDate?: string;
   transportType: string;
@@ -75,8 +92,35 @@ export class AiService {
     const hasRealKey = rawKey && !rawKey.startsWith('sk-dummy') && !rawKey.startsWith('sk-placeholder');
     // Bật khi có API key thật, HOẶC khi trỏ tới máy chủ local như Ollama (không cần key).
     if (hasRealKey || baseURL) {
-      this.openai = new OpenAI({ apiKey: rawKey || 'not-needed', baseURL });
+      this.openai = new OpenAI({
+        apiKey: rawKey || 'not-needed',
+        baseURL,
+        // Ollama phải nạp model vào RAM ở lần gọi đầu (hoặc sau vài phút không
+        // dùng), bước này có thể mất cả phút. Timeout mặc định của thư viện quá
+        // ngắn cho tình huống đó nên yêu cầu bị huỷ giữa chừng.
+        timeout: AI_TIMEOUT_MS,
+        maxRetries: 1,
+      });
+      this.warmUp();
     }
+  }
+
+  /**
+   * Nạp sẵn mô hình vào bộ nhớ ngay khi backend khởi động.
+   *
+   * Ollama chỉ nạp mô hình vào lúc có yêu cầu đầu tiên, và với mô hình 7B chạy
+   * trên CPU thì bước này mất hơn một phút. Nếu để tự nhiên, người dùng đầu tiên
+   * hỏi gì cũng phải ngồi chờ - giữa buổi demo thì trông như bị treo.
+   */
+  private warmUp() {
+    // Chạy nền, không chặn tiến trình khởi động, và lỗi ở đây không ảnh hưởng gì
+    // tới phần còn lại của ứng dụng.
+    setTimeout(() => {
+      this.openai?.chat.completions
+        .create({ model: this.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 })
+        .then(() => console.log(`🔥 Đã nạp sẵn mô hình AI: ${this.model}`))
+        .catch(() => console.warn(`⚠️  Chưa nạp được mô hình AI (${this.model}). Kiểm tra Ollama đã chạy chưa.`));
+    }, 3000);
   }
 
   // ===== Tiện ích đọc giá trị =====
@@ -122,12 +166,13 @@ export class AiService {
   }
 
   private assemble(fields: Partial<Record<CustomsFieldKey, string>>, journeys: ParsedJourney[], materials: ParsedMaterial[]): ParsedForm {
+    // Ô để trống trên bản mẫu ("………", "—", "-") không phải dữ liệu người dùng nhập.
     for (const k of Object.keys(fields) as CustomsFieldKey[]) {
-      const v = fields[k];
-      if (typeof v === 'string' && /^[—–\-\s]*$/.test(v)) delete fields[k];
+      if (isPlaceholderText(fields[k])) delete fields[k];
     }
     const vat = fields.vatRate ? this.toNumber(fields.vatRate) : undefined;
     return {
+      recordNo: fields.declarationNo || undefined,
       entryDate: this.parseDate(fields.entryDate) || new Date().toISOString(),
       exitDate: this.parseDate(fields.exitDate),
       transportType: journeys[0]?.transportType || 'AIR',
@@ -135,10 +180,10 @@ export class AiService {
       journeys,
       exporterName: fields.exporterName || '',
       exporterAddress: fields.exporterAddress || undefined,
-      exporterCountry: fields.exporterCountry || undefined,
+      exporterCountry: normalizeCountryCode(fields.exporterCountry),
       importerName: fields.importerName || '',
       importerAddress: fields.importerAddress || undefined,
-      importerCountry: fields.importerCountry || undefined,
+      importerCountry: normalizeCountryCode(fields.importerCountry),
       invoiceNo: fields.invoiceNo || undefined,
       billOfLading: fields.billOfLading || undefined,
       containerNo: fields.containerNo || undefined,
@@ -170,6 +215,10 @@ export class AiService {
         grid[rowNumber] = arr;
       });
 
+      // Một ô chỉ được coi là "giá trị" khi bản thân nó không phải nhãn của
+      // trường khác - nếu không, ô trống của trường này sẽ hút nhãn nằm kế bên.
+      const isLabel = (text: string) => Boolean(matchField(text) || matchMaterialColumn(text) || matchJourneyColumn(text));
+
       // 1) Quét các trường: nhãn -> giá trị bên phải (hoặc bên dưới nếu không phải nhãn)
       for (let rr = 1; rr < grid.length; rr++) {
         const row = grid[rr];
@@ -181,17 +230,17 @@ export class AiService {
           if (!key || fields[key] != null) continue;
           let val = '';
           for (let k = cc + 1; k < row.length; k++) {
-            if ((row[k] || '').trim()) {
-              val = row[k].trim();
-              break;
-            }
+            const candidate = (row[k] || '').trim();
+            if (!candidate) continue;
+            if (!isLabel(candidate)) val = candidate;
+            break;
           }
           if (!val) {
             const below = grid[rr + 1];
             const belowText = below ? (below[cc] || '').trim() : '';
-            if (belowText && !matchField(belowText) && !matchMaterialColumn(belowText) && !matchJourneyColumn(belowText)) val = belowText;
+            if (belowText && !isLabel(belowText)) val = belowText;
           }
-          if (val) fields[key] = val;
+          if (val && !isPlaceholderText(val)) fields[key] = val;
         }
       }
 
@@ -219,7 +268,7 @@ export class AiService {
             const row = grid[rr];
             const origin = row && originCol ? (row[originCol] || '').trim() : '';
             const destination = row && destCol ? (row[destCol] || '').trim() : '';
-            if (!origin && !destination) break;
+            if (isPlaceholderText(origin) && isPlaceholderText(destination)) break;
             const tCol = this.colOf(colMap, 'transportType');
             const lCol = this.colOf(colMap, 'legNumber');
             journeys.push({
@@ -254,7 +303,7 @@ export class AiService {
           for (let rr = headerRow + 1; rr < grid.length; rr++) {
             const row = grid[rr];
             const desc = row && descCol ? (row[descCol] || '').trim() : '';
-            if (!desc) break;
+            if (isPlaceholderText(desc)) break;
             const get = (key: MaterialFieldKey) => {
               const cc = this.colOf(colMap, key);
               return cc ? row[cc] : undefined;
@@ -266,7 +315,7 @@ export class AiService {
               quantity: this.toNumber(get('quantity')),
               unit: this.cellText(get('unit')) || 'cái',
               unitPrice: this.toNumber(get('unitPrice')),
-              origin: this.cellText(get('origin')) || undefined,
+              origin: normalizeCountryCode(get('origin')),
               weight: this.toNumber(get('weight')) || undefined,
             });
           }
@@ -293,25 +342,95 @@ export class AiService {
 
   // ==================== ĐỌC PDF (theo nhãn, best-effort) ====================
 
+  /**
+   * Dựng lại text của PDF, giữ ranh giới giữa các ô trong bảng.
+   *
+   * Text mặc định của pdf-parse nối thẳng các ô liền nhau ("18471.30Máy tính
+   * xách tay10cái850") vì trong PDF không có khái niệm "cột" - chỉ có các mẩu
+   * chữ đặt tại toạ độ. Ở đây gom các mẩu chữ theo dòng (toạ độ y) rồi chèn TAB
+   * vào chỗ có khoảng trống ngang, nhờ vậy bảng mới tách được thành các cột.
+   */
+  private async pdfLines(buffer: Buffer): Promise<string[]> {
+    /** Khoảng hở ngang (pt) đủ lớn để coi là ranh giới giữa hai ô. */
+    const COLUMN_GAP = 3;
+    /** Sai số dọc (pt) khi gom các mẩu chữ về cùng một dòng. */
+    const ROW_TOLERANCE = 2;
+
+    const rows: { y: number; items: { x: number; width: number; str: string }[] }[] = [];
+
+    const renderPage = (pageData: any) =>
+      pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false }).then((content: any) => {
+        for (const item of content.items) {
+          if (!item.str) continue;
+          const x = item.transform[4];
+          const y = item.transform[5];
+          const row = rows.find((r) => Math.abs(r.y - y) <= ROW_TOLERANCE);
+          if (row) row.items.push({ x, width: item.width || 0, str: item.str });
+          else rows.push({ y, items: [{ x, width: item.width || 0, str: item.str }] });
+        }
+        return '';
+      });
+
+    await pdfParse(buffer, { pagerender: renderPage });
+
+    // PDF đánh y từ dưới lên, nên phải đảo lại mới ra thứ tự đọc của con người.
+    rows.sort((a, b) => b.y - a.y);
+
+    return rows
+      .map((row) => {
+        row.items.sort((a, b) => a.x - b.x);
+        let line = '';
+        let cursor = -Infinity;
+        for (const item of row.items) {
+          if (line && item.x - cursor > COLUMN_GAP) line += '\t';
+          line += item.str;
+          cursor = item.x + item.width;
+        }
+        return line.trim();
+      })
+      .filter((line) => line.length > 0);
+  }
+
+  /**
+   * Tách "Nhãn: giá trị" khi cả hai dính liền trong một mẩu chữ.
+   * Xảy ra khi ô nhãn và ô giá trị sát nhau đến mức không còn khoảng hở để nhận
+   * ra ranh giới cột.
+   */
+  private splitLabelValue(text: string): { key: CustomsFieldKey; value: string } | null {
+    const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const f of CUSTOMS_FIELDS) {
+      const m = text.match(new RegExp('^\\s*' + escape(f.label) + '\\s*[:\\-]?\\s*(.+)$', 'i'));
+      if (m && m[1] && !matchField(m[1])) return { key: f.key, value: m[1].trim() };
+    }
+    return null;
+  }
+
   async parsePdf(buffer: Buffer): Promise<ParsedForm> {
-    const data = await pdfParse(buffer);
-    const lines: string[] = String(data.text || '')
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+    const lines = await this.pdfLines(buffer);
 
     const fields: Partial<Record<CustomsFieldKey, string>> = {};
-    const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    for (const f of CUSTOMS_FIELDS) {
-      if (fields[f.key] != null) continue;
-      const re = new RegExp('^\\s*' + escape(f.label) + '\\s*[:\\-]?\\s*(.+)$', 'i');
-      for (const line of lines) {
-        const m = line.match(re);
-        if (m && m[1] && matchField(m[1]) === undefined) {
-          fields[f.key] = m[1].trim();
-          break;
+    // Khối "Bên xuất khẩu" và "Bên nhập khẩu" nằm cạnh nhau trên bản PDF, nên
+    // một dòng có thể chứa hai cặp nhãn - giá trị. Vì vậy phải duyệt theo từng
+    // mẩu chữ trong dòng, không thể lấy toàn bộ phần đuôi làm giá trị.
+    for (const line of lines) {
+      const tokens = line.split('\t').map((t) => t.trim()).filter(Boolean);
+      for (let i = 0; i < tokens.length; i++) {
+        let key = matchField(tokens[i]);
+        let value = '';
+
+        if (key) {
+          const next = tokens[i + 1];
+          if (next && !matchField(next)) {
+            value = next;
+            i++;
+          }
+        } else {
+          const pair = this.splitLabelValue(tokens[i]);
+          if (pair) ({ key, value } = pair);
         }
+
+        if (key && value && fields[key] == null && !isPlaceholderText(value)) fields[key] = value;
       }
     }
 
@@ -355,7 +474,7 @@ export class AiService {
           quantity: this.toNumber(byIndex.quantity),
           unit: byIndex.unit || 'cái',
           unitPrice: this.toNumber(byIndex.unitPrice),
-          origin: byIndex.origin || undefined,
+          origin: normalizeCountryCode(byIndex.origin),
           weight: this.toNumber(byIndex.weight) || undefined,
         });
       }
@@ -371,25 +490,46 @@ export class AiService {
       return 'Trợ lý AI hiện chưa được cấu hình. Vui lòng đặt AI_BASE_URL/AI_MODEL (ví dụ Ollama) hoặc API key trong file .env để bật tính năng này.';
     }
 
+    // Chỉ lấy lịch sử của phiên trò chuyện đang diễn ra. Hội thoại từ hôm trước
+    // không còn là ngữ cảnh hữu ích, nhưng vẫn đủ sức kéo model nhỏ quay lại chủ
+    // đề cũ và trả lời lạc hẳn câu vừa hỏi.
+    const historyCutoff = new Date(Date.now() - CHAT_SESSION_WINDOW_MS);
     const history = userId
       ? await this.prisma.chatMessage.findMany({
-          where: { userId },
+          where: { userId, createdAt: { gte: historyCutoff } },
           orderBy: { createdAt: 'desc' },
-          take: 10,
+          take: CHAT_HISTORY_LIMIT,
         })
       : [];
 
     const messages: any[] = [
       {
         role: 'system',
-        content: `Bạn là trợ lý AI của hệ thống quản lý hải quan. Bạn giúp người dùng:
-1. Hướng dẫn cách điền tờ khai hải quan
-2. Giải thích các quy định hải quan Việt Nam
-3. Hỗ trợ sử dụng phần mềm
-4. Giải thích các mã HS code, thuế VAT, phí vận chuyển
-Trả lời bằng tiếng Việt, ngắn gọn, dễ hiểu.`,
+        content: `Bạn là trợ lý AI tích hợp trong phần mềm quản lý hải quan Việt Nam.
+
+Bạn trả lời được MỌI chủ đề người dùng hỏi. Thế mạnh chuyên sâu của bạn là nghiệp
+vụ xuất nhập khẩu: tờ khai hải quan, mã HS, thuế VAT, chứng từ (hoá đơn, vận đơn,
+C/O), Incoterms, thủ tục thông quan, và cách sử dụng chính phần mềm này.
+
+QUY TẮC TRẢ LỜI:
+- Trả lời bằng tiếng Việt, rõ ràng, đi thẳng vào vấn đề. Câu hỏi đơn giản thì đáp
+  ngắn gọn; câu phức tạp mới cần chia ý hoặc gạch đầu dòng.
+- Chỉ trả lời câu hỏi mới nhất. Lịch sử bên dưới là ngữ cảnh tham khảo; người dùng
+  đổi chủ đề thì bỏ qua hoàn toàn nội dung cũ, đừng nhắc lại câu trả lời trước.
+- Thông tin có thể đã thay đổi theo thời gian (nhân sự, giá cả, quy định, thuế
+  suất) thì nói rõ là kiến thức của bạn có thể không còn mới, và khuyên người dùng
+  kiểm chứng lại từ nguồn chính thức.
+- Không biết thì nói thẳng là không biết. Tuyệt đối không bịa số liệu, điều khoản
+  hay tên văn bản pháp luật.`,
       },
       ...history.reverse().map((m) => ({ role: m.role, content: m.content })),
+      // Nhắc lại ngay trước câu hỏi: model bám vào phần cuối ngữ cảnh mạnh hơn
+      // nhiều so với system prompt nằm tít trên đầu, nên chỉ đặt luật ở trên thì
+      // sau vài lượt trao đổi nó sẽ trôi mất và model quay ra trả lời chủ đề cũ.
+      {
+        role: 'system',
+        content: 'Chỉ trả lời đúng câu hỏi ngay dưới đây, không nhắc lại nội dung của các lượt trước.',
+      },
       { role: 'user', content: message },
     ];
 
@@ -398,11 +538,28 @@ Trả lời bằng tiếng Việt, ngắn gọn, dễ hiểu.`,
       const response = await this.openai.chat.completions.create({
         model: this.model,
         messages,
-        max_tokens: 500,
+        max_tokens: 600,
+        temperature: 0.3,
       });
       reply = response.choices[0]?.message?.content?.trim() || 'Xin lỗi, tôi chưa có câu trả lời phù hợp.';
     } catch (err: any) {
-      return `Không kết nối được tới dịch vụ AI (${this.model}). Vui lòng kiểm tra AI đang chạy và cấu hình .env. Chi tiết: ${err?.message || 'lỗi không xác định'}`;
+      // Phân biệt rõ các nguyên nhân: người dùng cần biết phải mở Ollama lên hay
+      // chỉ cần hỏi lại, thay vì nhận chung một câu "có lỗi xảy ra".
+      const detail = String(err?.message || '');
+      const isTimeout = /timeout|aborted|ETIMEDOUT/i.test(detail);
+      const isOffline = /ECONNREFUSED|fetch failed|ENOTFOUND|socket hang up/i.test(detail);
+
+      if (isOffline) {
+        throw new ServiceUnavailableException(
+          'Chưa kết nối được tới Ollama. Hãy kiểm tra Ollama đã chạy trên máy chưa (mở ứng dụng Ollama hoặc chạy lệnh "ollama serve").',
+        );
+      }
+      if (isTimeout) {
+        throw new ServiceUnavailableException(
+          'Trợ lý AI phản hồi quá lâu. Lần hỏi đầu tiên cần nạp mô hình vào bộ nhớ nên có thể mất tới một phút — vui lòng thử lại.',
+        );
+      }
+      throw new ServiceUnavailableException(`Không gọi được trợ lý AI (${this.model}). Chi tiết: ${detail || 'lỗi không xác định'}`);
     }
 
     if (userId) {

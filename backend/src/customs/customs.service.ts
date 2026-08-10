@@ -1,9 +1,21 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomsDto } from './dto/create-customs.dto';
 import { calculateShippingFee, DEFAULT_EXCHANGE_RATE, getVatRateByCountry } from './financial-rules';
+import {
+  ALLOWED_TRANSITIONS,
+  canRoleSet,
+  canTransition,
+  CustomsStatus,
+  isValidStatus,
+  nextStatusesFor,
+  STATUS_LABELS,
+} from './status-workflow';
 
 type AuthUser = { sub: string; role: string; companyId?: string | null };
+
+/** Số tháng hiển thị trên biểu đồ xu hướng của dashboard. */
+const TREND_MONTHS = 12;
 
 @Injectable()
 export class CustomsService {
@@ -112,6 +124,11 @@ export class CustomsService {
         companyId: user.companyId ?? undefined,
         materials: { create: materialsWithTotal },
         ...(journeys && journeys.length > 0 && { journeys: { create: journeys } }),
+        // Mốc đầu tiên của nhật ký: không có bản ghi này thì dòng thời gian sẽ
+        // bắt đầu lửng lơ ở lần đổi trạng thái thứ hai.
+        statusHistory: {
+          create: { toStatus: 'DRAFT', note: 'Khởi tạo tờ khai', changedById: user.sub },
+        },
       },
       include: {
         materials: true,
@@ -177,22 +194,67 @@ export class CustomsService {
         attachments: true,
         journeys: { orderBy: { legNumber: 'asc' } },
         createdBy: { select: { fullName: true, email: true } },
+        statusHistory: {
+          orderBy: { createdAt: 'desc' },
+          include: { changedBy: { select: { fullName: true, role: true } } },
+        },
       },
     });
     if (!record) throw new NotFoundException('Không tìm thấy tờ khai');
     return record;
   }
 
-  async updateStatus(id: string, status: string, user: AuthUser) {
+  async updateStatus(id: string, status: string, user: AuthUser, note?: string) {
+    if (!isValidStatus(status)) throw new BadRequestException(`Trạng thái "${status}" không hợp lệ`);
+
     const found = await this.prisma.customsRecord.findFirst({
       where: { id, ...this.toRecordScope(user) },
-      select: { id: true },
+      select: { id: true, status: true, recordNo: true },
     });
     if (!found) throw new ForbiddenException('Bạn không có quyền cập nhật tờ khai này');
-    return this.prisma.customsRecord.update({
-      where: { id },
-      data: { status: status as any },
+
+    const from = found.status as CustomsStatus;
+    if (from === status) return this.findOne(id, user);
+
+    if (!canTransition(from, status)) {
+      const allowed = ALLOWED_TRANSITIONS[from].map((next) => STATUS_LABELS[next]);
+      throw new BadRequestException(
+        allowed.length === 0
+          ? `Tờ khai đã ở trạng thái "${STATUS_LABELS[from]}" và không thể chuyển tiếp.`
+          : `Không thể chuyển từ "${STATUS_LABELS[from]}" sang "${STATUS_LABELS[status]}". Bước hợp lệ tiếp theo: ${allowed.join(', ')}.`,
+      );
+    }
+
+    if (!canRoleSet(user.role, status)) {
+      throw new ForbiddenException(`Vai trò của bạn không được phép chuyển tờ khai sang "${STATUS_LABELS[status]}"`);
+    }
+
+    // Ghi nhật ký cùng transaction với việc đổi trạng thái, để không xảy ra tình
+    // huống trạng thái đã đổi nhưng không còn dấu vết ai là người đổi.
+    const [record] = await this.prisma.$transaction([
+      this.prisma.customsRecord.update({ where: { id }, data: { status: status as any } }),
+      this.prisma.customsStatusHistory.create({
+        data: { customsRecordId: id, fromStatus: from as any, toStatus: status as any, note, changedById: user.sub },
+      }),
+    ]);
+
+    return record;
+  }
+
+  /** Các bước tiếp theo mà vai trò hiện tại được phép thực hiện. */
+  async getAvailableTransitions(id: string, user: AuthUser) {
+    const record = await this.prisma.customsRecord.findFirst({
+      where: { id, ...this.toRecordScope(user) },
+      select: { status: true },
     });
+    if (!record) throw new NotFoundException('Không tìm thấy tờ khai');
+    return {
+      current: record.status,
+      next: nextStatusesFor(record.status as CustomsStatus, user.role).map((status) => ({
+        status,
+        label: STATUS_LABELS[status],
+      })),
+    };
   }
 
   async remove(id: string, user: AuthUser) {
@@ -200,14 +262,103 @@ export class CustomsService {
     return this.prisma.customsRecord.delete({ where: { id: record.id } });
   }
 
+  /**
+   * Quy đổi về USD trước khi cộng dồn. Mỗi tờ khai tự mang tỷ giá của nó, nên
+   * cộng thẳng totalPayable sẽ trộn lẫn con số VND với USD và cho ra tổng vô nghĩa.
+   */
+  private toUsd(amount: number, currency: string, exchangeRate: number) {
+    const value = Number(amount) || 0;
+    if ((currency || 'USD').toUpperCase() !== 'VND') return value;
+    const rate = Number(exchangeRate) || DEFAULT_EXCHANGE_RATE;
+    return rate > 0 ? value / rate : value;
+  }
+
+  private monthKey(date: Date) {
+    return `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, '0')}`;
+  }
+
   async getStats(user: AuthUser) {
     const where = this.toRecordScope(user);
-    const [total, byStatus, byTransport] = await Promise.all([
+    const now = new Date();
+
+    const [total, byStatus, byTransport, records] = await Promise.all([
       this.prisma.customsRecord.count({ where }),
       this.prisma.customsRecord.groupBy({ by: ['status'], _count: true, where }),
       this.prisma.customsRecord.groupBy({ by: ['transportType'], _count: true, where }),
+      this.prisma.customsRecord.findMany({
+        where,
+        select: {
+          entryDate: true,
+          totalPayable: true,
+          totalValue: true,
+          vatAmount: true,
+          currency: true,
+          exchangeRate: true,
+          importerName: true,
+        },
+      }),
     ]);
-    return { total, byStatus, byTransport };
+
+    // Dựng sẵn 12 bucket tháng để tháng không có hồ sơ vẫn hiện trên biểu đồ
+    // (thiếu bucket thì đường xu hướng sẽ nối tắt và bóp méo hình dạng dữ liệu).
+    const trendBuckets = new Map<string, { month: string; count: number; value: number }>();
+    for (let offset = TREND_MONTHS - 1; offset >= 0; offset -= 1) {
+      const date = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+      const key = this.monthKey(date);
+      trendBuckets.set(key, { month: key, count: 0, value: 0 });
+    }
+
+    const currentKey = this.monthKey(now);
+    const previousKey = this.monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+
+    const totals = { payable: 0, value: 0, vat: 0 };
+    const companyTotals = new Map<string, { name: string; count: number; value: number }>();
+
+    for (const record of records) {
+      const payable = this.toUsd(record.totalPayable, record.currency, record.exchangeRate);
+      totals.payable += payable;
+      totals.value += this.toUsd(record.totalValue, record.currency, record.exchangeRate);
+      totals.vat += this.toUsd(record.vatAmount, record.currency, record.exchangeRate);
+
+      const bucket = trendBuckets.get(this.monthKey(record.entryDate));
+      if (bucket) {
+        bucket.count += 1;
+        bucket.value += payable;
+      }
+
+      const name = (record.importerName || '').trim() || 'Không xác định';
+      const company = companyTotals.get(name) ?? { name, count: 0, value: 0 };
+      company.count += 1;
+      company.value += payable;
+      companyTotals.set(name, company);
+    }
+
+    const round = (n: number) => Number(n.toFixed(2));
+    const trend = [...trendBuckets.values()].map((b) => ({ ...b, value: round(b.value) }));
+    const currentCount = trendBuckets.get(currentKey)?.count ?? 0;
+    const previousCount = trendBuckets.get(previousKey)?.count ?? 0;
+
+    const topCompanies = [...companyTotals.values()]
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5)
+      .map((c) => ({ ...c, value: round(c.value) }));
+
+    return {
+      total,
+      byStatus,
+      byTransport,
+      // Mọi số tiền dưới đây đã quy đổi về USD
+      currency: 'USD',
+      totals: { payable: round(totals.payable), value: round(totals.value), vat: round(totals.vat) },
+      trend,
+      momentum: {
+        currentCount,
+        previousCount,
+        // Không có nền so sánh thì đừng bịa ra 100% tăng trưởng
+        changePct: previousCount === 0 ? null : round(((currentCount - previousCount) / previousCount) * 100),
+      },
+      topCompanies,
+    };
   }
 
   async getCompanies(user: AuthUser, search?: string) {

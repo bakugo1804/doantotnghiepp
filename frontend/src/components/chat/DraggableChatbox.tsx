@@ -5,7 +5,14 @@ import { MessageCircle, X, Send, Loader2, GripVertical } from 'lucide-react';
 import { aiApi } from '@/lib/api';
 import { useSession } from 'next-auth/react';
 
-interface Message { role: 'user' | 'assistant'; content: string; }
+interface Message { role: 'user' | 'assistant'; content: string; isError?: boolean; }
+
+/** Câu hỏi gợi ý, giúp người dùng biết trợ lý này hỗ trợ được những gì. */
+const SUGGESTIONS = [
+  'Mã HS là gì và tra ở đâu?',
+  'Thuế VAT nhập khẩu tính thế nào?',
+  'Cần chứng từ gì để thông quan?',
+];
 
 export function DraggableChatbox() {
   const { data: session } = useSession();
@@ -15,6 +22,7 @@ export function DraggableChatbox() {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [takingLong, setTakingLong] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, px: 0, py: 0 });
@@ -30,12 +38,33 @@ export function DraggableChatbox() {
     setInput('');
     setMessages((prev) => [...prev, { role: 'user', content: msg }]);
     setLoading(true);
+    // Lần hỏi đầu tiên phải chờ nạp mô hình, nên báo cho người dùng biết là máy
+    // vẫn đang chạy chứ không phải bị treo.
+    const slowHint = setTimeout(() => setTakingLong(true), 6000);
+
     try {
       const res = await aiApi.chat(msg);
       setMessages((prev) => [...prev, { role: 'assistant', content: res.data.reply }]);
-    } catch {
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.' }]);
+    } catch (error: any) {
+      // Hiện đúng nguyên nhân từ máy chủ thay vì một câu chung chung — trước đây
+      // mọi lỗi đều ra "có lỗi xảy ra" nên không thể biết phải xử lý thế nào.
+      const serverMessage = error?.response?.data?.message;
+      const isTimeout = error?.code === 'ECONNABORTED';
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content:
+            serverMessage ||
+            (isTimeout
+              ? 'Trợ lý AI phản hồi quá lâu. Lần hỏi đầu tiên cần nạp mô hình nên có thể mất tới một phút, bạn thử lại giúp tôi nhé.'
+              : 'Không kết nối được tới trợ lý AI. Hãy kiểm tra Ollama đã chạy trên máy chưa.'),
+          isError: true,
+        },
+      ]);
     } finally {
+      clearTimeout(slowHint);
+      setTakingLong(false);
       setLoading(false);
     }
   };
@@ -94,15 +123,42 @@ export function DraggableChatbox() {
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'}`}>
+                  <div
+                    className={`max-w-[85%] whitespace-pre-wrap px-3 py-2 rounded-xl text-sm ${
+                      msg.role === 'user'
+                        ? 'bg-blue-600 text-white rounded-br-sm'
+                        : msg.isError
+                          ? 'bg-rose-50 text-rose-800 border border-rose-200 rounded-bl-sm'
+                          : 'bg-gray-100 text-gray-800 rounded-bl-sm'
+                    }`}
+                  >
                     {msg.content}
                   </div>
                 </div>
               ))}
+
+              {/* Gợi ý chỉ hiện khi chưa có trao đổi nào */}
+              {messages.length === 1 && !loading && (
+                <div className="space-y-1.5 pt-1">
+                  {SUGGESTIONS.map((question) => (
+                    <button
+                      key={question}
+                      onClick={() => setInput(question)}
+                      className="block w-full rounded-lg border border-gray-200 px-3 py-2 text-left text-xs text-gray-600 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                    >
+                      {question}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {loading && (
                 <div className="flex justify-start">
-                  <div className="bg-gray-100 px-3 py-2 rounded-xl rounded-bl-sm">
+                  <div className="flex items-center gap-2 rounded-xl rounded-bl-sm bg-gray-100 px-3 py-2">
                     <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+                    {takingLong && (
+                      <span className="text-xs text-gray-500">Đang nạp mô hình, lần đầu hơi lâu...</span>
+                    )}
                   </div>
                 </div>
               )}

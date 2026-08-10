@@ -40,7 +40,9 @@ export const customsApi = {
   getCompanies: (search?: string) => apiClient.get('/customs/companies', { params: { search } }),
   checkRecordNo: (recordNo: string) => apiClient.get('/customs/check-record-no', { params: { recordNo } }),
   create: (data: any) => apiClient.post('/customs', data),
-  updateStatus: (id: string, status: string) => apiClient.patch(`/customs/${id}/status`, { status }),
+  getTransitions: (id: string) => apiClient.get(`/customs/${id}/transitions`),
+  updateStatus: (id: string, status: string, note?: string) =>
+    apiClient.patch(`/customs/${id}/status`, { status, note }),
   delete: (id: string) => apiClient.delete(`/customs/${id}`),
 };
 
@@ -91,7 +93,9 @@ export const aiApi = {
     const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
     return isPdf ? aiApi.parsePdf(file) : aiApi.parseExcel(file);
   },
-  chat: (message: string) => apiClient.post('/ai/chat', { message }),
+  // Timeout dài hơn hẳn các API khác: lần hỏi đầu tiên Ollama phải nạp mô hình
+  // vào RAM, bước này có thể mất gần một phút trên máy không có GPU.
+  chat: (message: string) => apiClient.post('/ai/chat', { message }, { timeout: 180_000 }),
 };
 
 // ===== Báo cáo / Xuất file =====
@@ -122,6 +126,7 @@ export const searchApi = {
 export const notificationsApi = {
   list: () => apiClient.get('/notifications'),
   markRead: (id: string) => apiClient.patch(`/notifications/${id}/read`),
+  markAllRead: () => apiClient.patch('/notifications/read-all'),
 };
 
 // axios instance dùng trực tiếp (vd: api.get('/auth/companies'))

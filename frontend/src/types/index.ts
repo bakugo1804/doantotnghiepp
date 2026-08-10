@@ -6,13 +6,18 @@ export type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'DONE';
 export interface User {
   id: string;
   email: string;
+  /** Tên đăng nhập ngắn, dùng thay email khi đăng nhập. */
+  username: string;
   fullName: string;
   phone?: string;
   avatarUrl?: string | null;
   role: Role;
   companyId?: string | null;
   company?: { id: string; name: string } | null;
+  /** Tài khoản có được phép đăng nhập hay không - không phải trạng thái online. */
   isActive: boolean;
+  /** Mốc đăng nhập gần nhất; null nghĩa là chưa từng đăng nhập. */
+  lastLoginAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

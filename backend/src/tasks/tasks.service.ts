@@ -5,7 +5,19 @@ import { PrismaService } from '../prisma/prisma.service';
 export class TasksService {
   constructor(private prisma: PrismaService) {}
 
-  async create(data: { title: string; description?: string; workDate: string; status?: 'TODO' | 'IN_PROGRESS' | 'DONE'; assignedToId: string }, assignedById: string, assignedByCompanyId?: string | null) {
+  async create(
+    data: {
+      title: string;
+      description?: string;
+      workDate: string;
+      status?: 'TODO' | 'IN_PROGRESS' | 'DONE';
+      assignedToId: string;
+      /** Gắn công việc vào một tờ khai cụ thể, dùng khi giao việc ngay từ trang chi tiết. */
+      customsRecordId?: string;
+    },
+    assignedById: string,
+    assignedByCompanyId?: string | null,
+  ) {
     if (assignedByCompanyId) {
       const assignee = await this.prisma.user.findUnique({
         where: { id: data.assignedToId },
@@ -15,7 +27,7 @@ export class TasksService {
         throw new ForbiddenException('Chỉ được giao việc cho người cùng tổ chức');
       }
     }
-    return this.prisma.task.create({
+    const task = await this.prisma.task.create({
       data: {
         title: data.title,
         description: data.description,
@@ -23,16 +35,63 @@ export class TasksService {
         status: data.status,
         assignedToId: data.assignedToId,
         assignedById,
+        customsRecordId: data.customsRecordId,
       },
       include: {
         assignedTo: { select: { id: true, fullName: true, email: true, role: true } },
         assignedBy: { select: { id: true, fullName: true } },
+        customsRecord: { select: { id: true, recordNo: true } },
       },
     });
+
+    // Báo cho người được giao. Trước đây bước này không tồn tại, nên nhân viên chỉ
+    // biết mình có việc mới nếu tự mở trang Công việc ra xem.
+    await this.notifyAssignee(task, 'Bạn được giao công việc mới');
+
+    return task;
   }
 
-  findAll(userId: string, role: string, companyId: string | null | undefined, filters: { date?: string; assignedToId?: string; status?: string }) {
+  /**
+   * Gửi thông báo trong ứng dụng cho người nhận việc.
+   *
+   * Không để lỗi thông báo làm hỏng cả thao tác giao việc: việc đã được tạo rồi,
+   * chuông không kêu là phiền chứ không phải mất dữ liệu.
+   */
+  private async notifyAssignee(task: any, subject: string) {
+    // Tự giao việc cho chính mình thì không cần báo.
+    if (task.assignedToId === task.assignedById) return;
+
+    const dueDate = new Date(task.workDate).toLocaleDateString('vi-VN');
+    const relatedRecord = task.customsRecord ? ` (tờ khai ${task.customsRecord.recordNo})` : '';
+    const content =
+      `${task.assignedBy?.fullName ?? 'Quản lý'} giao cho bạn: "${task.title}"${relatedRecord}. ` +
+      `Hạn xử lý: ${dueDate}.`;
+
+    try {
+      await this.prisma.notification.create({
+        data: {
+          userId: task.assignedToId,
+          subject,
+          content,
+          source: 'APP',
+          link: task.customsRecordId ? `/dashboard/customs/${task.customsRecordId}` : '/dashboard/tasks',
+        },
+      });
+    } catch (error) {
+      console.error('Không tạo được thông báo giao việc:', error);
+    }
+  }
+
+  findAll(
+    userId: string,
+    role: string,
+    companyId: string | null | undefined,
+    filters: { date?: string; assignedToId?: string; status?: string; customsRecordId?: string },
+  ) {
     const where: any = {};
+
+    // Lọc theo tờ khai: trang chi tiết dùng để liệt kê ai đang phụ trách hồ sơ này.
+    if (filters.customsRecordId) where.customsRecordId = filters.customsRecordId;
 
     // 1 tổ chức: Giám đốc (ADMIN) & Quản lý (DIRECTOR) xem toàn bộ và lọc theo nhân viên;
     // các vai trò khác chỉ xem việc được giao cho mình.
@@ -55,8 +114,9 @@ export class TasksService {
     return this.prisma.task.findMany({
       where,
       include: {
-        assignedTo: { select: { id: true, fullName: true, email: true, role: true } },
+        assignedTo: { select: { id: true, fullName: true, email: true, role: true, avatarUrl: true } },
         assignedBy: { select: { id: true, fullName: true } },
+        customsRecord: { select: { id: true, recordNo: true, status: true } },
       },
       orderBy: [{ workDate: 'asc' }, { createdAt: 'desc' }],
     });
@@ -93,14 +153,22 @@ export class TasksService {
     }
     if (nextData.workDate) nextData.workDate = new Date(nextData.workDate);
 
-    return this.prisma.task.update({
+    const updated = await this.prisma.task.update({
       where: { id },
       data: nextData,
       include: {
         assignedTo: { select: { id: true, fullName: true, email: true, role: true } },
         assignedBy: { select: { id: true, fullName: true } },
+        customsRecord: { select: { id: true, recordNo: true } },
       },
     });
+
+    // Chuyển việc sang người khác cũng là "được giao việc mới" với người nhận.
+    if (nextData.assignedToId && nextData.assignedToId !== task.assignedToId) {
+      await this.notifyAssignee(updated, 'Bạn được giao công việc mới');
+    }
+
+    return updated;
   }
 
   async remove(id: string, role: string, companyId?: string | null) {

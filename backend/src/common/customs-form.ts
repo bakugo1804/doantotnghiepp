@@ -10,6 +10,7 @@
  */
 
 export type CustomsFieldKey =
+  | 'declarationNo'
   | 'entryDate'
   | 'exitDate'
   | 'flightNo'
@@ -33,8 +34,19 @@ export interface CustomsFieldDef {
   synonyms?: string[]; // Các cách viết khác (đã bỏ dấu) để đọc file linh hoạt
 }
 
+/**
+ * Nhóm của "Số tờ khai".
+ *
+ * Trường này được vẽ riêng ở góc trên biểu mẫu (đúng vị trí của tờ khai giấy)
+ * chứ không nằm trong khối nhóm nào, nên section của nó cố ý không có mặt trong
+ * SECTION_ORDER của reports.service - nếu thêm vào đó nó sẽ bị vẽ hai lần.
+ */
+export const IDENTITY_SECTION = 'Định danh';
+
 /** Danh sách trường của phần thông tin chung (ngoài bảng vật tư). */
 export const CUSTOMS_FIELDS: CustomsFieldDef[] = [
+  { key: 'declarationNo', label: 'Số tờ khai', section: IDENTITY_SECTION, synonyms: ['so to khai', 'so tk', 'to khai so', 'declaration no', 'declaration number'] },
+
   { key: 'entryDate', label: 'Ngày nhập cảnh', section: 'Thông tin chung', synonyms: ['ngay nhap canh', 'ngay nhap', 'entry date'] },
   { key: 'exitDate', label: 'Ngày xuất cảnh', section: 'Thông tin chung', synonyms: ['ngay xuat canh', 'exit date'] },
   { key: 'flightNo', label: 'Số hiệu chuyến (bay/tàu)', section: 'Thông tin chung', synonyms: ['so hieu chuyen', 'so hieu chuyen bay tau', 'so chuyen bay', 'chuyen bay', 'ten tau', 'so hieu tau', 'flight no', 'so hieu tau xe'] },
@@ -163,6 +175,17 @@ export function normalizeTransport(value: unknown): 'AIR' | 'SEA' | 'RAIL' | 'RO
   if (/(duong sat|tau lua|tau hoa|\bsat\b|\brail\b)/.test(n)) return 'RAIL';
   if (/(duong bo|xe tai|\bo to\b|oto|\bbo\b|\broad\b)/.test(n)) return 'ROAD';
   return undefined;
+}
+
+/**
+ * Ô mẫu để trống trên biểu mẫu giấy được điền bằng dấu chấm nối hoặc gạch ngang.
+ * Người dùng tải mẫu về mà không xoá thì phải coi như ô trống, nếu không hệ thống
+ * sẽ lưu nguyên chuỗi "………" vào cơ sở dữ liệu.
+ */
+export function isPlaceholderText(value: unknown): boolean {
+  const s = String(value ?? '').trim();
+  if (!s) return true;
+  return /^[.…–—\-_\s:]*$/.test(s);
 }
 
 /** Nhãn tiếng Việt cho loại vận chuyển (dùng khi xuất file). */

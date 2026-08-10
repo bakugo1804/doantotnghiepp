@@ -1,10 +1,17 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Ảnh đại diện được gửi kèm dưới dạng data URL trong JSON, mà mức trần mặc
+  // định của Express chỉ là 100KB - gần như mọi ảnh chụp đều vượt và bị trả về
+  // lỗi 413 trước khi tới controller.
+  app.use(json({ limit: '8mb' }));
+  app.use(urlencoded({ limit: '8mb', extended: true }));
 
   // CORS
   app.enableCors({
