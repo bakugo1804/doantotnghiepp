@@ -33,7 +33,10 @@ services:
       # Trợ lý AI dùng Ollama chạy trên máy host (miễn phí, không cần API key).
       # Có thể đổi sang Groq/Gemini/OpenAI bằng cách sửa 3 biến dưới.
       AI_BASE_URL: ${AI_BASE_URL:-http://host.docker.internal:11434/v1}
-      AI_MODEL: ${AI_MODEL:-qwen2.5:7b}
+      # Giữ đúng model mà README hướng dẫn tải. Để lệch (7b ở đây, 3b trong
+      # README) thì backend đi tìm một model chưa được pull về, và chatbox chỉ
+      # báo lỗi vào đúng lúc có người bấm thử - thường là giữa buổi demo.
+      AI_MODEL: ${AI_MODEL:-qwen2.5:3b}
       AI_API_KEY: ${AI_API_KEY:-not-needed}
       PORT: 3001
       NODE_ENV: development

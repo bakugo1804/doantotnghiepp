@@ -10,6 +10,34 @@ Excel/PDF bằng AI, báo cáo có biểu đồ và trợ lý AI chạy hoàn to
 
 Cần cài sẵn **Docker Desktop**.
 
+### Dựng lại từ đầu trên máy mới
+
+Chỉ cần **Docker Desktop** và **Git**. Không cần cài Node.js, không cần
+PostgreSQL, không phải chạy `npm install`, và **không cần tạo file `.env` nào** —
+mọi biến trong `docker-compose.yml` đều đã có sẵn giá trị mặc định.
+
+```bash
+git clone https://github.com/bakugo1804/doantotnghiepp
+cd doantotnghiepp
+docker-compose up -d --build
+```
+
+Lần đầu build mất khoảng 5–10 phút. Sau đó tạo cấu trúc database và dữ liệu mẫu —
+chạy bên trong container nên máy không cần Node.js:
+
+```bash
+docker-compose exec backend npx prisma migrate deploy
+docker-compose exec backend npx ts-node prisma/seed.ts
+```
+
+Xong thì mở http://localhost:3000 và đăng nhập `admin` / `Admin@123456`.
+
+> **Phải seed xong rồi mới chuyển sang chế độ trình diễn.** Image `production`
+> cài bằng `npm ci --only=production` nên không có `ts-node` lẫn `prisma` CLI,
+> lúc đó không seed được nữa.
+
+Muốn dùng cả chatbox AI thì cài thêm Ollama (xem mục [Trợ lý AI](#-trợ-lý-ai-miễn-phí-không-cần-api-key)).
+
 ### Khi demo / bảo vệ đồ án — dùng lệnh này
 
 ```bash
