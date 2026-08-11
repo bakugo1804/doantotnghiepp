@@ -13,6 +13,7 @@ import {
   MaterialFieldKey,
   JourneyFieldKey,
   isPlaceholderText,
+  normalizeLabel,
   normalizeTransport,
 } from '../common/customs-form';
 import { normalizeCountryCode } from '../common/countries';
@@ -168,8 +169,21 @@ export class AiService {
     return isNaN(dt.getTime()) ? undefined : dt.toISOString();
   }
 
+  /**
+   * Nhận ra đồng tiền từ chữ người dùng viết tay lên biểu mẫu.
+   *
+   * Trước đây chỉ so đúng chuỗi "VND", nên ghi "VNĐ", "đồng", "₫" hay "vnd " đều bị
+   * hiểu thành USD một cách âm thầm - sai đồng tiền là sai toàn bộ số tiền trên tờ
+   * khai. Ô trống thì mặc định USD như trước.
+   */
   private normalizeCurrency(value: any): string {
-    return this.cellText(value).toUpperCase().includes('VND') ? 'VND' : 'USD';
+    const raw = this.cellText(value);
+    if (/[₫đ]/i.test(raw)) return 'VND';
+
+    const text = normalizeLabel(raw); // bỏ dấu, chữ thường: "VNĐ" -> "vnd"
+    if (!text) return 'USD';
+    if (/\b(vnd|vn|dong|d)\b/.test(text) || text.includes('viet nam dong')) return 'VND';
+    return 'USD';
   }
 
   private assemble(fields: Partial<Record<CustomsFieldKey, string>>, journeys: ParsedJourney[], materials: ParsedMaterial[]): ParsedForm {

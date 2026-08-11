@@ -225,6 +225,8 @@ export class ReportsService {
         transportType: p.transportType,
         distanceKm: p.distanceKm,
         vatRateOverride: p.vatRate != null ? Number(p.vatRate) : undefined,
+        currency,
+        exchangeRate: p.exchangeRate,
       },
     );
     const vatRate = computed.vatRate;

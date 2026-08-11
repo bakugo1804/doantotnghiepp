@@ -236,6 +236,21 @@ async function main() {
     { hsCode: '7208.51', description: 'Thép tấm cán nóng', unit: 'tấn', unitPrice: 640, weightPerUnit: 1000 },
   ] as const;
 
+  /**
+   * Chọn phương thức vận chuyển hợp lý với lô hàng.
+   *
+   * Hai yếu tố quyết định trong thực tế:
+   *  - Trọng lượng: hàng chục tấn thì chỉ đi đường biển hoặc đường sắt.
+   *  - Giá trị trên mỗi kg: không ai gửi hàng không cho hàng rẻ, vì tiền cước sẽ
+   *    vượt cả tiền hàng.
+   */
+  const pickTransportFor = (weightKg: number, valuePerKg: number, seed: number): 'AIR' | 'SEA' | 'RAIL' | 'ROAD' => {
+    const airWorthwhile = valuePerKg >= 20;
+    if (weightKg <= 500) return airWorthwhile && seed < 0.6 ? 'AIR' : 'ROAD';
+    if (weightKg <= 5000) return seed < 0.5 ? 'ROAD' : seed < 0.8 ? 'RAIL' : 'SEA';
+    return seed < 0.75 ? 'SEA' : 'RAIL';
+  };
+
   /** Số ngày đi đường theo phương thức - đường biển lâu nhất, hàng không nhanh nhất. */
   const transitDays = (transportType: string, seed: number) => {
     const range: Record<string, [number, number]> = { AIR: [1, 3], ROAD: [2, 6], RAIL: [4, 9], SEA: [12, 28] };
@@ -263,8 +278,6 @@ async function main() {
       const maxDay = monthsAgo === 0 ? seedNow.getDate() : lastDay;
       const entryDate = new Date(anchor.getFullYear(), anchor.getMonth(), 1 + Math.floor(random() * maxDay));
 
-      const transportType = pick(transports);
-      const route = routes[transportType];
       const materials = Array.from({ length: 1 + Math.floor(random() * 3) }, (_, itemIndex) => {
         const item = pick(goods);
         const quantity = 5 + Math.floor(random() * 180);
@@ -283,6 +296,16 @@ async function main() {
           weight: Number((quantity * item.weightPerUnit).toFixed(3)),
         };
       });
+
+      // Phương thức vận chuyển phải phù hợp với TRỌNG LƯỢNG lô hàng.
+      //
+      // Bốc thăm ngẫu nhiên như trước sẽ ghép 165 tấn thép với đường hàng không, và
+      // vì phí vận chuyển giờ tính theo trọng lượng thật, tờ khai đó ra phí gấp 15
+      // lần trị giá hàng - đúng công thức nhưng vô lý về nghiệp vụ.
+      const shipmentWeight = materials.reduce((sum, m) => sum + m.weight, 0);
+      const shipmentValue = materials.reduce((sum, m) => sum + m.totalPrice, 0);
+      const transportType = pickTransportFor(shipmentWeight, shipmentValue / Math.max(shipmentWeight, 1), random());
+      const route = routes[transportType];
 
       const exporterName = pick(exporters);
       const importerName = pick(importers);
@@ -378,6 +401,8 @@ async function main() {
       importerCountry: sample.importerCountry,
       transportType: sample.transportType,
       distanceKm: sample.distanceKm,
+      currency: sample.currency,
+      exchangeRate: sample.exchangeRate,
     });
 
     await prisma.customsRecord.create({

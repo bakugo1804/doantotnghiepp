@@ -98,6 +98,29 @@ function lookupRoute<T>(table: Record<string, T>, from: string, to: string): T |
   return table[`${from}-${to}`] ?? table[`${to}-${from}`];
 }
 
+/** Bậc giảm giá theo khối lượng - biểu giá vận tải giảm dần khi lô hàng lớn hơn. */
+const WEIGHT_BREAKS: [number, number][] = [
+  [100, 1],
+  [1_000, 0.6],
+  [10_000, 0.35],
+  [Infinity, 0.2],
+];
+
+/** Trọng lượng tính phí sau khi áp bậc giảm giá; lô dưới 100kg giữ nguyên. */
+function chargeableWeight(weightKg: number): number {
+  let remaining = Math.max(weightKg, 0);
+  let previousLimit = 0;
+  let chargeable = 0;
+  for (const [limit, factor] of WEIGHT_BREAKS) {
+    if (remaining <= 0) break;
+    const slice = Math.min(remaining, limit - previousLimit);
+    chargeable += slice * factor;
+    remaining -= slice;
+    previousLimit = limit;
+  }
+  return chargeable;
+}
+
 export function resolveDistanceKm(distanceKm: number | undefined, exporterCountry?: string, importerCountry?: string): number {
   const declared = Number(distanceKm);
   if (Number.isFinite(declared) && declared > 0) return declared;
@@ -107,6 +130,10 @@ export function resolveDistanceKm(distanceKm: number | undefined, exporterCountr
   return lookupRoute(ESTIMATED_DISTANCE_KM, from, to) ?? 5000;
 }
 
+/**
+ * Phí vận chuyển, TRẢ VỀ BẰNG USD - biểu giá quốc tế luôn niêm yết bằng USD.
+ * Người gọi phải quy đổi sang đồng tiền của tờ khai (xem previewTotals).
+ */
 export function calculateShippingFee(input: {
   distanceKm?: number;
   weightKg?: number;
@@ -119,8 +146,11 @@ export function calculateShippingFee(input: {
   const rates = TRANSPORT_RATES[String(input.transportType || 'SEA').toUpperCase()] ?? TRANSPORT_RATES.SEA;
   const distance = resolveDistanceKm(input.distanceKm, from, to);
   const weight = Math.max(Number(input.weightKg) || 0, 1);
+  const billableWeight = chargeableWeight(weight);
   const multiplier = lookupRoute(ROUTE_MULTIPLIER, from, to) ?? (from === to ? 1 : 1.15);
-  return Number(((rates.base + weight * rates.perKg + weight * rates.perKgPer1000Km * (distance / 1000)) * multiplier).toFixed(2));
+  return Number(
+    ((rates.base + billableWeight * rates.perKg + billableWeight * rates.perKgPer1000Km * (distance / 1000)) * multiplier).toFixed(2),
+  );
 }
 
 export type PreviewMaterial = {
@@ -153,10 +183,28 @@ function weightedRate(pairs: [number, number][]): number {
   return Number((pairs.reduce((sum, [rate, weight]) => sum + rate * weight, 0) / total).toFixed(2));
 }
 
-/** Xem trước toàn bộ số liệu tài chính của tờ khai đang nhập. */
+/** Quy đổi một số tiền USD sang đồng tiền của tờ khai - khớp fromUsd ở backend. */
+function fromUsd(amountUsd: number, currency?: string, exchangeRate?: number): number {
+  if (String(currency || 'USD').toUpperCase() !== 'VND') return Number(amountUsd.toFixed(2));
+  const rate = Number(exchangeRate) > 0 ? Number(exchangeRate) : 25000;
+  return Math.round(amountUsd * rate);
+}
+
+/**
+ * Xem trước toàn bộ số liệu tài chính của tờ khai đang nhập.
+ * Mọi số trả về đều tính bằng đồng tiền của tờ khai (`options.currency`).
+ */
 export function previewTotals(
   materials: PreviewMaterial[],
-  options: { exporterCountry?: string; importerCountry?: string; transportType?: string; distanceKm?: number },
+  options: {
+    exporterCountry?: string;
+    importerCountry?: string;
+    transportType?: string;
+    distanceKm?: number;
+    /** Đồng tiền đang dùng để ghi đơn giá hàng hoá. */
+    currency?: string;
+    exchangeRate?: number;
+  },
 ): TaxPreview {
   const lines = materials.map((material) => {
     const totalPrice = Number(((Number(material.quantity) || 0) * (Number(material.unitPrice) || 0)).toFixed(2));
@@ -172,13 +220,20 @@ export function previewTotals(
   const importDutyAmount = Number(lines.reduce((sum, line) => sum + line.dutyAmount, 0).toFixed(2));
   const vatAmount = Number(lines.reduce((sum, line) => sum + line.vatAmount, 0).toFixed(2));
   const distanceKm = resolveDistanceKm(options.distanceKm, options.exporterCountry, options.importerCountry);
-  const shippingFee = calculateShippingFee({
-    distanceKm,
-    weightKg: totalWeight,
-    transportType: options.transportType,
-    exporterCountry: options.exporterCountry,
-    importerCountry: options.importerCountry,
-  });
+  // Biểu giá vận chuyển bằng USD, phải quy đổi về đồng tiền của tờ khai trước khi
+  // cộng vào tổng - nếu không, tờ khai ghi bằng VND sẽ hiện "52 đồng" phí vận
+  // chuyển thay vì 1.295.250 đồng.
+  const shippingFee = fromUsd(
+    calculateShippingFee({
+      distanceKm,
+      weightKg: totalWeight,
+      transportType: options.transportType,
+      exporterCountry: options.exporterCountry,
+      importerCountry: options.importerCountry,
+    }),
+    options.currency,
+    options.exchangeRate,
+  );
 
   return {
     totalValue,

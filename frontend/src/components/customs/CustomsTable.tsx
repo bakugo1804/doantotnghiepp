@@ -6,8 +6,19 @@ import { formatDate } from '@/lib/utils';
 import { useMessages } from '@/hooks/useMessages';
 import { useStatusLabels, useTransportLabels } from '@/hooks/useCustomsLabels';
 import { CurrencyToggle, Money } from '@/components/settings/CurrencyProvider';
-import { Eye, Search, FileSpreadsheet, FileText, Pencil } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, Search, FileSpreadsheet, FileText, Pencil } from 'lucide-react';
 import Link from 'next/link';
+
+/** Cột nào sắp xếp được, và sắp theo trường nào ở phía máy chủ. */
+type SortField =
+  | 'recordNo'
+  | 'entryDate'
+  | 'exitDate'
+  | 'transportType'
+  | 'exporterName'
+  | 'importerName'
+  | 'totalPayable'
+  | 'status';
 
 export function CustomsTable() {
   const msg = useMessages();
@@ -16,6 +27,8 @@ export function CustomsTable() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [sortBy, setSortBy] = useState<SortField>('entryDate');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 400);
@@ -23,9 +36,46 @@ export function CustomsTable() {
   }, [search]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customs', page, debouncedSearch],
-    queryFn: () => customsApi.getAll({ page, limit: 20, search: debouncedSearch || undefined }).then((r) => r.data),
+    queryKey: ['customs', page, debouncedSearch, sortBy, sortDir],
+    queryFn: () =>
+      customsApi.getAll({ page, limit: 20, search: debouncedSearch || undefined, sortBy, sortDir }).then((r) => r.data),
   });
+
+  /**
+   * Bấm vào tiêu đề cột để sắp xếp; bấm lại đổi chiều.
+   *
+   * Việc sắp xếp do máy chủ làm, không phải sắp lại 20 dòng của trang hiện tại -
+   * bảng có phân trang nên sắp ở phía giao diện sẽ bỏ sót dữ liệu ở các trang khác.
+   */
+  const toggleSort = (field: SortField) => {
+    if (sortBy === field) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(field);
+      // Ngày và số tiền thì lần đầu ai cũng muốn xem cái lớn nhất trước.
+      setSortDir(field === 'recordNo' || field === 'exporterName' || field === 'importerName' ? 'asc' : 'desc');
+    }
+    setPage(1);
+  };
+
+  const SortHeader = ({ field, label }: { field: SortField; label: string }) => {
+    const active = sortBy === field;
+    const Icon = !active ? ChevronsUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown;
+    return (
+      <th className="px-4 py-3 text-left">
+        <button
+          onClick={() => toggleSort(field)}
+          title={`Sắp xếp theo ${label}`}
+          className={`group inline-flex items-center gap-1.5 text-xs font-semibold uppercase transition ${
+            active ? 'text-blue-700' : 'text-gray-600 hover:text-blue-700'
+          }`}
+        >
+          {label}
+          <Icon className={`h-3.5 w-3.5 shrink-0 transition ${active ? 'opacity-100' : 'opacity-30 group-hover:opacity-70'}`} />
+        </button>
+      </th>
+    );
+  };
 
   const handleExport = async (id: string, recordNo: string) => {
     const res = await reportsApi.exportExcel(id);
@@ -61,21 +111,19 @@ export function CustomsTable() {
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200">
-              {[
-                msg.customs.table.headers.recordNo,
-                msg.customs.table.headers.entryDate,
-                // Ngày xuất khẩu vốn có trên tờ khai nhưng bảng chỉ hiện ngày nhập,
-                // nên không thể biết lô nào đã đi khỏi Việt Nam mà không mở từng hồ sơ.
-                'Ngày xuất khẩu',
-                msg.customs.table.headers.transport,
-                msg.customs.table.headers.exporter,
-                msg.customs.table.headers.importer,
-                msg.customs.table.headers.total,
-                msg.customs.table.headers.status,
-                msg.customs.table.headers.actions,
-              ].map((h) => (
-                <th key={h} className="text-left px-4 py-3 text-gray-600 font-semibold text-xs uppercase">{h}</th>
-              ))}
+              <SortHeader field="recordNo" label={msg.customs.table.headers.recordNo} />
+              {/* Hai mốc đầu - cuối của hành trình vận chuyển. Trước đây bảng chỉ có
+                  một cột "Ngày nhập", không biết lô nào đã tới đích. */}
+              <SortHeader field="entryDate" label={msg.customs.table.headers.entryDate} />
+              <SortHeader field="exitDate" label={msg.customs.table.headers.exitDate} />
+              <SortHeader field="transportType" label={msg.customs.table.headers.transport} />
+              <SortHeader field="exporterName" label={msg.customs.table.headers.exporter} />
+              <SortHeader field="importerName" label={msg.customs.table.headers.importer} />
+              <SortHeader field="totalPayable" label={msg.customs.table.headers.total} />
+              <SortHeader field="status" label={msg.customs.table.headers.status} />
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-gray-600">
+                {msg.customs.table.headers.actions}
+              </th>
             </tr>
           </thead>
           <tbody>

@@ -91,6 +91,10 @@ export class CustomsService {
         transportType: dto.transportType,
         distanceKm: dto.distanceKm,
         vatRateOverride: dto.vatRate,
+        // Đơn giá hàng hoá đang ghi bằng đồng tiền này, nên phí vận chuyển (niêm
+        // yết bằng USD) phải quy đổi về đây mới cộng chung được.
+        currency: dto.currency,
+        exchangeRate: dto.exchangeRate,
       },
     );
 
@@ -302,6 +306,8 @@ export class CustomsService {
       status?: string;
       transportType?: string;
       companyName?: string;
+      sortBy?: string;
+      sortDir?: string;
     },
   ) {
     const skip = (options.page - 1) * options.limit;
@@ -333,12 +339,42 @@ export class CustomsService {
         where,
         skip,
         take: options.limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy: this.toOrderBy(options.sortBy, options.sortDir),
         include: { materials: true, createdBy: { select: { fullName: true } } },
       }),
       this.prisma.customsRecord.count({ where }),
     ]);
     return { data, total, page: options.page, limit: options.limit, totalPages: Math.ceil(total / options.limit) };
+  }
+
+  /**
+   * Sắp xếp phải làm ở cơ sở dữ liệu, không phải ở giao diện.
+   *
+   * Bảng có phân trang 20 dòng, nên sắp xếp trên trang hiện tại chỉ đổi thứ tự của
+   * đúng 20 dòng đó - bấm "Tổng tiền giảm dần" mà tờ khai to nhất nằm ở trang 3 thì
+   * vẫn không thấy. Chỉ nhận đúng các cột trong danh sách trắng này để không ai
+   * truyền tên cột tuỳ ý vào truy vấn.
+   */
+  private toOrderBy(sortBy?: string, sortDir?: string) {
+    const allowed = [
+      'recordNo',
+      'entryDate',
+      'exitDate',
+      'transportType',
+      'exporterName',
+      'importerName',
+      'totalPayable',
+      'totalWeight',
+      'status',
+      'createdAt',
+      'updatedAt',
+    ];
+    const field = allowed.includes(String(sortBy)) ? String(sortBy) : 'createdAt';
+    const direction = String(sortDir).toLowerCase() === 'asc' ? 'asc' : 'desc';
+    // Tờ khai chưa có ngày kết thúc thì xếp xuống cuối, đừng để null chen lên đầu.
+    return field === 'exitDate'
+      ? [{ exitDate: { sort: direction, nulls: 'last' } } as any]
+      : [{ [field]: direction } as any];
   }
 
   async findOne(id: string, user: AuthUser) {

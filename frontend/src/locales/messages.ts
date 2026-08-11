@@ -3,7 +3,7 @@ export const messages = {
     customs: {
       form: {
         title: 'Tạo tờ khai',
-        entryDate: 'Ngày nhập cảnh',
+        entryDate: 'Ngày bắt đầu vận chuyển',
         transportType: 'Loại vận chuyển',
         leg1Origin: 'Điểm đi',
         leg1Destination: 'Điểm đến',
@@ -37,7 +37,11 @@ export const messages = {
         search: 'Tìm kiếm số tờ khai, công ty...',
         headers: {
           recordNo: 'Số tờ khai',
-          entryDate: 'Ngày nhập',
+          // Hai mốc đầu - cuối của hành trình vận chuyển. Nhãn cũ ("Ngày nhập")
+          // vừa cắt cụt vừa gợi sai sang "ngày nhập khẩu". Không viết tắt: đây là
+          // hệ thống nghiệp vụ, người đọc không phải đoán "VC" là gì.
+          entryDate: 'Bắt đầu vận chuyển',
+          exitDate: 'Kết thúc vận chuyển',
           transport: 'Vận chuyển',
           exporter: 'Nhà XK',
           importer: 'Nhà NK',
@@ -105,7 +109,8 @@ export const messages = {
         search: 'Search declaration number, company...',
         headers: {
           recordNo: 'Record No.',
-          entryDate: 'Entry Date',
+          entryDate: 'Transport start',
+          exitDate: 'Transport end',
           transport: 'Transport',
           exporter: 'Exporter',
           importer: 'Importer',

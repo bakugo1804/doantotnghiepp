@@ -125,7 +125,13 @@ export function getImportDutyRate(
 
 // ==================== Phí vận chuyển ====================
 
-/** Đơn giá theo phương thức: [phí cố định (USD), đơn giá mỗi kg, đơn giá mỗi kg mỗi 1000km]. */
+/**
+ * Đơn giá theo phương thức, TÍNH BẰNG USD: phí cố định, đơn giá mỗi kg, đơn giá
+ * mỗi kg mỗi 1000km.
+ *
+ * Đây là biểu giá quốc tế nên luôn niêm yết bằng USD. Tờ khai ghi bằng VND thì
+ * phải quy đổi trước khi cộng vào tổng - xem calcDeclarationTotals.
+ */
 const TRANSPORT_RATES: Record<string, { base: number; perKg: number; perKgPer1000Km: number }> = {
   // Hàng không nhanh nhưng đắt nhất và nhạy nhất với trọng lượng
   AIR: { base: 35, perKg: 4.5, perKgPer1000Km: 1.2 },
@@ -154,6 +160,40 @@ const ESTIMATED_DISTANCE_KM: Record<string, number> = {
   'VN-US': 13000, 'VN-EU': 9500, 'VN-DE': 9500, 'VN-FR': 10000, 'VN-GB': 10000,
 };
 
+/**
+ * Bậc giảm giá theo khối lượng: [trọng lượng tối đa của bậc (kg), hệ số đơn giá].
+ *
+ * Biểu giá vận tải thật luôn giảm dần theo khối lượng - gửi 1 kg và gửi 100 tấn
+ * không thể cùng đơn giá mỗi kg. Nếu để đơn giá phẳng thì một lô 150 tấn thép có
+ * phí vận chuyển cao hơn cả trị giá lô hàng, đúng công thức nhưng vô lý.
+ */
+const WEIGHT_BREAKS: [number, number][] = [
+  [100, 1],
+  [1_000, 0.6],
+  [10_000, 0.35],
+  [Infinity, 0.2],
+];
+
+/**
+ * "Trọng lượng tính phí": trọng lượng thật sau khi áp bậc giảm giá.
+ *
+ * Lô nhỏ (dưới 100kg) giữ nguyên trọng lượng thật nên phí của hàng lẻ không đổi.
+ */
+function chargeableWeight(weightKg: number): number {
+  let remaining = Math.max(weightKg, 0);
+  let previousLimit = 0;
+  let chargeable = 0;
+
+  for (const [limit, factor] of WEIGHT_BREAKS) {
+    if (remaining <= 0) break;
+    const slice = Math.min(remaining, limit - previousLimit);
+    chargeable += slice * factor;
+    remaining -= slice;
+    previousLimit = limit;
+  }
+  return chargeable;
+}
+
 function routeKey(from: string, to: string) {
   return `${from}-${to}`;
 }
@@ -174,11 +214,15 @@ export function resolveDistanceKm(distanceKm: number | undefined, exporterCountr
 }
 
 /**
- * Phí vận chuyển của cả lô hàng.
+ * Phí vận chuyển của cả lô hàng, TRẢ VỀ BẰNG USD.
  *
  * Trọng lượng là biến chính: cùng một tuyến, 3kg và 30kg phải ra hai con số khác
  * nhau. Lô không khai trọng lượng vẫn phải có phí, nên dùng mức tối thiểu thay vì
  * cho ra 0.
+ *
+ * Người gọi có trách nhiệm quy đổi sang đồng tiền của tờ khai. Cộng thẳng con số
+ * này vào một tổng đang tính bằng VND sẽ ra "52 đồng" phí vận chuyển thay vì
+ * 1.295.250 đồng.
  */
 export function calculateShippingFee(input: {
   distanceKm?: number;
@@ -194,10 +238,11 @@ export function calculateShippingFee(input: {
   const distance = resolveDistanceKm(input.distanceKm, from, to);
   // Lô chưa khai trọng lượng vẫn phải chịu phí tối thiểu của 1kg.
   const weight = Math.max(Number(input.weightKg) || 0, 1);
+  const billableWeight = chargeableWeight(weight);
 
   const multiplier = lookupRoute(ROUTE_MULTIPLIER, from, to) ?? (from === to ? 1 : 1.15);
-  const weightFee = weight * rates.perKg;
-  const distanceFee = weight * rates.perKgPer1000Km * (distance / 1000);
+  const weightFee = billableWeight * rates.perKg;
+  const distanceFee = billableWeight * rates.perKgPer1000Km * (distance / 1000);
 
   return Number(((rates.base + weightFee + distanceFee) * multiplier).toFixed(2));
 }
@@ -233,6 +278,7 @@ export function calcMaterialTax(material: TaxableMaterial, importerCountry?: str
   return { totalPrice, dutyRate, dutyAmount, vatRate, vatAmount };
 }
 
+/** Mọi số tiền trong đây đều tính bằng ĐỒNG TIỀN CỦA TỜ KHAI, không phải USD. */
 export type DeclarationTotals = {
   totalValue: number;
   totalWeight: number;
@@ -244,6 +290,14 @@ export type DeclarationTotals = {
   totalPayable: number;
   distanceKm: number;
 };
+
+/** Quy đổi một số tiền USD sang đồng tiền của tờ khai. */
+function fromUsd(amountUsd: number, currency?: string, exchangeRate?: number): number {
+  if (String(currency || 'USD').toUpperCase() !== 'VND') return Number(amountUsd.toFixed(2));
+  const rate = Number(exchangeRate) > 0 ? Number(exchangeRate) : DEFAULT_EXCHANGE_RATE;
+  // VND không dùng phần thập phân.
+  return Math.round(amountUsd * rate);
+}
 
 /**
  * Tổng hợp tài chính của cả tờ khai từ danh sách hàng hoá.
@@ -261,6 +315,12 @@ export function calcDeclarationTotals(
     distanceKm?: number;
     /** Thuế suất VAT do người khai ấn định, dùng khi biểu mẫu giấy đã ghi sẵn. */
     vatRateOverride?: number;
+    /**
+     * Đồng tiền của tờ khai - đơn giá hàng hoá đang ghi bằng đồng tiền này.
+     * Phí vận chuyển tính ra USD nên phải biết cái này để quy đổi.
+     */
+    currency?: string;
+    exchangeRate?: number;
   },
 ): DeclarationTotals {
   const taxes = materials.map((material) => calcMaterialTax(material, options.importerCountry));
@@ -282,13 +342,19 @@ export function calcDeclarationTotals(
   const importDutyRate = weightedRate(taxes.map((tax) => [tax.dutyRate, tax.totalPrice]));
 
   const distanceKm = resolveDistanceKm(options.distanceKm, options.exporterCountry, options.importerCountry);
-  const shippingFee = calculateShippingFee({
-    distanceKm,
-    weightKg: totalWeight,
-    transportType: options.transportType,
-    exporterCountry: options.exporterCountry,
-    importerCountry: options.importerCountry,
-  });
+  // Biểu giá vận chuyển niêm yết bằng USD, còn trị giá hàng và thuế đang tính bằng
+  // đồng tiền của tờ khai, nên phải quy đổi trước khi cộng chung một tổng.
+  const shippingFee = fromUsd(
+    calculateShippingFee({
+      distanceKm,
+      weightKg: totalWeight,
+      transportType: options.transportType,
+      exporterCountry: options.exporterCountry,
+      importerCountry: options.importerCountry,
+    }),
+    options.currency,
+    options.exchangeRate,
+  );
 
   return {
     totalValue,

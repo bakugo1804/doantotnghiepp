@@ -88,6 +88,8 @@ export function ImportExcel() {
           importerCountry: form?.importerCountry,
           transportType: form?.journeys?.[0]?.transportType,
           distanceKm: 0,
+          currency: form?.currency,
+          exchangeRate: form?.exchangeRate,
         },
       ),
     [form],
@@ -398,14 +400,13 @@ export function ImportExcel() {
                 className={`${inputCls} ${recordNoTaken ? 'border-red-500 ring-2 ring-red-100' : ''}`} placeholder="VD: TK2026-001" />
               {recordNoTaken && <p className="text-red-600 text-xs mt-1">⚠ Số tờ khai đã tồn tại, vui lòng nhập số khác.</p>}
             </div>
-            {/* Cùng cách gọi với trang tạo tờ khai: đây là hai đầu của hành trình
-                vận chuyển, không phải ngày nhập khẩu / xuất khẩu. */}
+            {/* Cùng cách gọi với trang tạo tờ khai: hai đầu của hành trình vận chuyển. */}
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày bắt đầu vận chuyển (nhập cảnh)</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày bắt đầu vận chuyển</label>
               <input type="date" value={form.entryDate} onChange={(e) => setField('entryDate', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày kết thúc vận chuyển (xuất cảnh)</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày kết thúc vận chuyển</label>
               <input type="date" value={form.exitDate || ''} onChange={(e) => setField('exitDate', e.target.value)} className={inputCls} />
             </div>
             <div>

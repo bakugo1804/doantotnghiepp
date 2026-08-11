@@ -26,6 +26,8 @@ export class CustomsController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'transportType', required: false })
   @ApiQuery({ name: 'companyName', required: false })
+  @ApiQuery({ name: 'sortBy', required: false, description: 'recordNo | entryDate | exitDate | totalPayable | status ...' })
+  @ApiQuery({ name: 'sortDir', required: false, enum: ['asc', 'desc'] })
   @Get()
   findAll(
     @Request() req,
@@ -35,6 +37,8 @@ export class CustomsController {
     @Query('status') status?,
     @Query('transportType') transportType?,
     @Query('companyName') companyName?,
+    @Query('sortBy') sortBy?,
+    @Query('sortDir') sortDir?,
   ) {
     return this.customsService.findAll(req.user, {
       page: +page || 1,
@@ -43,6 +47,8 @@ export class CustomsController {
       status,
       transportType,
       companyName,
+      sortBy,
+      sortDir,
     });
   }
 

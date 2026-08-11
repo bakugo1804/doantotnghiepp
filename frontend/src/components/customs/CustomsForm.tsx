@@ -301,9 +301,11 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
           importerCountry,
           transportType: journeys[0]?.transportType,
           distanceKm: 0,
+          currency,
+          exchangeRate,
         },
       ),
-    [materials, exporterCountry, importerCountry, journeys],
+    [materials, exporterCountry, importerCountry, journeys, currency, exchangeRate],
   );
 
   const updateJourney = (legNumber: number, field: keyof CreateJourneyDto, value: string | number | TransportType) => {
@@ -493,15 +495,15 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
             <FieldError message={errorOf('recordNo')} />
           </div>
 
-          {/* Hai mốc này là điểm ĐẦU và điểm CUỐI của hành trình vận chuyển, không
-              phải ngày nhập khẩu / xuất khẩu của lô hàng. Ghi rõ cả hai cách gọi
-              để không ai điền ngược thứ tự. */}
+          {/* Hai mốc này là điểm ĐẦU và điểm CUỐI của hành trình vận chuyển. Không
+              gọi là "nhập cảnh / xuất cảnh" vì theo nghĩa hải quan thì hàng xuất
+              cảnh trước rồi mới nhập cảnh - ngược thứ tự của hai ô này. */}
           <div data-field="entryDate">
             <label className="mb-1 block text-sm font-medium text-slate-700">
               Ngày bắt đầu vận chuyển <span className="text-rose-600">*</span>
             </label>
             <input type="date" value={entryDate} onChange={(event) => setEntryDate(event.target.value)} className={fieldClass('entryDate')} />
-            <p className="mt-1 text-xs text-slate-400">Ngày nhập cảnh - hàng bắt đầu rời điểm đi</p>
+            <p className="mt-1 text-xs text-slate-400">Hàng rời điểm đi của chặng đầu tiên</p>
             <FieldError message={errorOf('entryDate')} />
           </div>
 
@@ -509,7 +511,7 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
             <label className="mb-1 block text-sm font-medium text-slate-700">Ngày kết thúc vận chuyển</label>
             <input type="date" value={exitDate} onChange={(event) => setExitDate(event.target.value)} className={fieldClass('exitDate')} />
             <p className="mt-1 text-xs text-slate-400">
-              Ngày xuất cảnh - hàng tới điểm đến
+              Hàng tới điểm đến của chặng cuối
               {transportDays != null && <span className="font-medium text-slate-500"> · {transportDays} ngày</span>}
             </p>
             <FieldError message={errorOf('exitDate')} />
