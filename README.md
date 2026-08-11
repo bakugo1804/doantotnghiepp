@@ -36,7 +36,8 @@ Xong thì mở http://localhost:3000 và đăng nhập `admin` / `Admin@123456`.
 > cài bằng `npm ci --only=production` nên không có `ts-node` lẫn `prisma` CLI,
 > lúc đó không seed được nữa.
 
-Muốn dùng cả chatbox AI thì cài thêm Ollama (xem mục [Trợ lý AI](#-trợ-lý-ai-miễn-phí-không-cần-api-key)).
+Muốn dùng chatbox AI và chức năng đọc ảnh chụp tờ khai giấy thì cài thêm Ollama
+(xem mục [Trợ lý AI](#-trợ-lý-ai-miễn-phí-không-cần-api-key)) — cần **hai** model.
 
 ### Khi demo / bảo vệ đồ án — dùng lệnh này
 
@@ -107,27 +108,43 @@ Hệ thống phục vụ **một doanh nghiệp**, cây quyền lực đi theo s
 
 ## 🤖 Trợ lý AI (miễn phí, không cần API key)
 
-Chatbox dùng **[Ollama](https://ollama.com/download)** chạy trên máy — không tốn phí,
-không cần thẻ tín dụng, dữ liệu không rời khỏi máy.
+Chatbox và chức năng đọc ảnh chụp tờ khai đều dùng **[Ollama](https://ollama.com/download)**
+chạy trên máy — không tốn phí, không cần thẻ tín dụng, dữ liệu không rời khỏi máy.
 
 ```bash
 # 1. Cài Ollama
 winget install Ollama.Ollama        # Windows
 # hoặc tải tại https://ollama.com/download
 
-# 2. Tải model (~1.9 GB)
+# 2. Tải model cho chatbox (~1.9 GB)
 ollama pull qwen2.5:3b
+
+# 3. Tải model thị giác cho chức năng đọc ảnh tờ khai giấy (~6 GB)
+ollama pull qwen2.5vl:7b
 ```
 
 Ollama tự chạy nền sau khi cài. Backend kết nối qua `http://host.docker.internal:11434/v1`
 (đã cấu hình sẵn trong `docker-compose.yml`).
 
-**Đổi sang nhà cung cấp khác** — sửa 3 biến trong `docker-compose.yml`, không cần đụng code:
+> Thiếu `qwen2.5vl:7b` thì mục **Nhập từ file** vẫn đọc được Excel và PDF, chỉ riêng
+> upload ảnh sẽ báo lỗi kèm đúng lệnh cần chạy. Máy không có GPU vẫn chạy được nhưng
+> mỗi ảnh mất vài phút thay vì khoảng 15 giây.
+
+**Đổi sang nhà cung cấp khác** — sửa vài biến trong `docker-compose.yml`, không cần đụng code:
 
 ```yaml
 AI_BASE_URL: https://api.groq.com/openai/v1   # hoặc OpenAI, Gemini...
 AI_MODEL: llama-3.3-70b-versatile
 AI_API_KEY: <khoá của bạn>
+```
+
+Phần đọc ảnh cấu hình được riêng, nên có thể để chatbox chạy cục bộ mà chỉ trỏ
+việc đọc ảnh sang dịch vụ mạnh hơn:
+
+```yaml
+AI_VISION_MODEL: gpt-4o-mini
+AI_VISION_BASE_URL: https://api.openai.com/v1
+AI_VISION_API_KEY: <khoá của bạn>
 ```
 
 ---
