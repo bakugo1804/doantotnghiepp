@@ -29,6 +29,30 @@ export class AiController {
     return this.aiService.parsePdf(file.buffer);
   }
 
+  /**
+   * Đọc tờ khai từ ảnh chụp bản giấy đã điền tay.
+   *
+   * Ảnh chụp nặng hơn tệp Excel/PDF nhiều nên giới hạn kích thước ở đây, thay vì
+   * để mô hình nhận cả tấm ảnh 20MB rồi chờ vô ích.
+   */
+  @ApiOperation({ summary: 'Upload ảnh chụp tờ khai giấy để đọc và trích xuất dữ liệu' })
+  @ApiConsumes('multipart/form-data')
+  @Post('parse-image')
+  @UseInterceptors(FileInterceptor('file'))
+  async parseImage(@UploadedFile() file: Express.Multer.File) {
+    if (!file?.buffer) throw new BadRequestException('Không nhận được file');
+
+    const mime = file.mimetype || '';
+    if (!/^image\/(jpeg|jpg|png|webp)$/i.test(mime)) {
+      throw new BadRequestException('Chỉ nhận ảnh định dạng JPG, PNG hoặc WEBP');
+    }
+    const maxBytes = 12 * 1024 * 1024;
+    if (file.buffer.length > maxBytes) {
+      throw new BadRequestException('Ảnh quá lớn (giới hạn 12MB). Hãy chụp lại ở độ phân giải thấp hơn.');
+    }
+    return this.aiService.parseImage(file.buffer, mime);
+  }
+
   @ApiOperation({ summary: 'Chat với AI hỗ trợ hải quan' })
   @Post('chat')
   async chat(@Body('message') message: string, @Request() req) {

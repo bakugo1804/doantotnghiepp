@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getSession } from 'next-auth/react';
+import { isImageFile, shrinkImageForOcr } from './image';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -101,8 +102,25 @@ export const aiApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+  /**
+   * Đọc ảnh chụp tờ khai giấy. Mô hình thị giác chạy chậm hơn hẳn việc đọc tệp số
+   * nên nới thời gian chờ; lần gọi đầu còn phải nạp mô hình vào bộ nhớ.
+   *
+   * Ảnh được thu nhỏ ngay tại máy người dùng trước khi gửi - xem lib/image.ts để
+   * biết vì sao kích thước ảnh quyết định cả tốc độ lẫn độ chính xác.
+   */
+  parseImage: async (file: File) => {
+    const prepared = await shrinkImageForOcr(file);
+    const formData = new FormData();
+    formData.append('file', prepared);
+    return apiClient.post('/ai/parse-image', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 240_000,
+    });
+  },
   // Tự chọn endpoint theo phần mở rộng của file
   parseFile: (file: File) => {
+    if (isImageFile(file)) return aiApi.parseImage(file);
     const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
     return isPdf ? aiApi.parsePdf(file) : aiApi.parseExcel(file);
   },

@@ -49,7 +49,7 @@ export default function ReportsPage() {
         subtitle: 'Theo dõi dòng giá trị hàng hoá và xuất dữ liệu tờ khai ra Excel',
         template: 'Tải template Excel',
         totalValue: 'Tổng giá trị hàng',
-        totalValueHint: 'Trị giá khai báo, quy đổi USD',
+        totalValueHint: 'Trị giá khai báo, quy đổi',
         totalVat: 'Tổng thuế VAT',
         totalVatHint: 'Thuế phải nộp theo khai báo',
         totalPayable: 'Tổng phải thanh toán',
@@ -57,7 +57,7 @@ export default function ReportsPage() {
         avgValue: 'Giá trị trung bình',
         avgValueHint: 'Bình quân mỗi tờ khai',
         valueTrend: 'Giá trị theo tháng',
-        valueTrendSubtitle: '12 tháng gần nhất, tính theo ngày nhập cảnh',
+        valueTrendSubtitle: '12 tháng gần nhất, tính theo ngày bắt đầu vận chuyển',
         valueUnit: 'USD',
         statusTitle: 'Phân bổ trạng thái',
         statusSubtitle: 'Tỷ trọng hồ sơ theo từng bước xử lý',
@@ -67,7 +67,7 @@ export default function ReportsPage() {
         exportSubtitle: 'Chọn hồ sơ để tải bản Excel chi tiết',
         searchPlaceholder: 'Tìm theo số tờ khai hoặc doanh nghiệp...',
         colRecord: 'Số tờ khai',
-        colDate: 'Ngày nhập',
+        colDate: 'Bắt đầu vận chuyển',
         colTransport: 'Vận chuyển',
         colExporter: 'Nhà xuất khẩu',
         colTotal: 'Tổng tiền',
@@ -92,7 +92,7 @@ export default function ReportsPage() {
         subtitle: 'Track declared value flow and export declaration data to Excel',
         template: 'Download Excel template',
         totalValue: 'Total goods value',
-        totalValueHint: 'Declared value, normalised to USD',
+        totalValueHint: 'Declared value, normalised to',
         totalVat: 'Total VAT',
         totalVatHint: 'Tax payable as declared',
         totalPayable: 'Total payable',
@@ -100,7 +100,7 @@ export default function ReportsPage() {
         avgValue: 'Average value',
         avgValueHint: 'Mean per declaration',
         valueTrend: 'Value per month',
-        valueTrendSubtitle: 'Last 12 months, by entry date',
+        valueTrendSubtitle: 'Last 12 months, by transport start date',
         valueUnit: 'USD',
         statusTitle: 'Status distribution',
         statusSubtitle: 'Share of records at each processing step',
@@ -110,7 +110,7 @@ export default function ReportsPage() {
         exportSubtitle: 'Pick a record to download its detailed Excel sheet',
         searchPlaceholder: 'Search by record number or company...',
         colRecord: 'Record no.',
-        colDate: 'Entry date',
+        colDate: 'Transport start',
         colTransport: 'Transport',
         colExporter: 'Exporter',
         colTotal: 'Total',
@@ -227,7 +227,7 @@ export default function ReportsPage() {
         <StatTile
           label={copy.totalValue}
           value={money(totals.value)}
-          hint={copy.totalValueHint}
+          hint={`${copy.totalValueHint} ${display}`}
           icon={CircleDollarSign}
           loading={isStatsLoading}
         />

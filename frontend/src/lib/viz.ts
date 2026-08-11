@@ -52,6 +52,10 @@ export function formatMonthKey(key: string, locale = 'vi') {
 /**
  * Chọn các mốc trục Y "tròn" (0 / 5 / 10 …) bao trọn dải giá trị.
  * Trục tự sinh từ max thô sẽ cho ra những mốc như 3,7 hoặc 812 — đọc rất khó.
+ *
+ * Mốc trên cùng BẮT BUỘC lớn hơn hoặc bằng giá trị lớn nhất. Bản trước dừng vòng
+ * lặp ở điều kiện `tick <= max` nên với max = 9 chỉ sinh ra [0, 5]: trục cao nhất
+ * là 5 trong khi dữ liệu lên tới 9, khiến đường biểu đồ vẽ vọt ra ngoài khung thẻ.
  */
 export function niceTicks(max: number, count = 4): number[] {
   if (!Number.isFinite(max) || max <= 0) return [0, 1];
@@ -60,8 +64,11 @@ export function niceTicks(max: number, count = 4): number[] {
   const normalized = rawStep / magnitude;
   const stepMultiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
   const step = stepMultiplier * magnitude;
+
+  // Làm tròn LÊN tới bội số gần nhất của step để trục luôn phủ hết dữ liệu.
+  const top = Math.ceil(max / step - 1e-9) * step;
   const ticks: number[] = [];
-  for (let tick = 0; tick <= max + step * 0.001; tick += step) ticks.push(Number(tick.toFixed(6)));
+  for (let tick = 0; tick <= top + step * 1e-6; tick += step) ticks.push(Number(tick.toFixed(6)));
   if (ticks.length === 1) ticks.push(step);
   return ticks;
 }

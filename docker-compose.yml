@@ -38,6 +38,9 @@ services:
       # báo lỗi vào đúng lúc có người bấm thử - thường là giữa buổi demo.
       AI_MODEL: ${AI_MODEL:-qwen2.5:3b}
       AI_API_KEY: ${AI_API_KEY:-not-needed}
+      # Đọc ảnh chụp tờ khai giấy cần mô hình thị giác, khác mô hình trò chuyện ở trên.
+      # Phải pull riêng: ollama pull qwen2.5vl:7b
+      AI_VISION_MODEL: ${AI_VISION_MODEL:-qwen2.5vl:7b}
       PORT: 3001
       NODE_ENV: development
     extra_hosts:

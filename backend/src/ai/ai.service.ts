@@ -86,6 +86,30 @@ type ParsedForm = {
 export class AiService {
   private openai: OpenAI | null = null;
   private model: string;
+  /** Mô hình đọc ảnh - khác mô hình trò chuyện vì phải hiểu được hình ảnh. */
+  private visionModel: string;
+  /**
+   * Client riêng cho việc đọc ảnh.
+   *
+   * Tách khỏi client trò chuyện để hai việc chọn được hai nhà cung cấp khác nhau:
+   * trò chuyện giữ ở mô hình cục bộ cho kín dữ liệu và không tốn phí, còn đọc chữ
+   * viết tay có thể trỏ sang dịch vụ mạnh hơn nếu cần độ chính xác. Không cấu hình
+   * gì thêm thì dùng chung client với phần trò chuyện.
+   */
+  private visionClient: OpenAI | null = null;
+  /**
+   * Ollama phải gọi qua API riêng của nó, không dùng được đường tương thích OpenAI.
+   *
+   * Lý do: đường /v1/chat/completions của Ollama không nhận tham số num_ctx, nên
+   * cửa sổ ngữ cảnh bị kẹt ở mặc định 4096 token. Một ảnh chụp tờ khai đã chiếm
+   * hơn 4000 token, cộng lời nhắc vào là vượt trần - máy chủ trả lỗi
+   * "exceeds the available context size", hoặc tệ hơn là âm thầm cắt bớt ảnh và
+   * mô hình đọc thiếu nửa tờ khai. Đường /api/chat cho đặt num_ctx nên không vướng.
+   */
+  private visionApiStyle: 'ollama' | 'openai' = 'openai';
+  /** Địa chỉ gốc của Ollama (đã bỏ hậu tố /v1), chỉ dùng cho đường native. */
+  private visionOllamaUrl = '';
+  private visionNumCtx: number;
 
   constructor(
     private config: ConfigService,
@@ -96,6 +120,10 @@ export class AiService {
     const baseURL = config.get<string>('AI_BASE_URL')?.trim() || undefined;
     const rawKey = (config.get<string>('AI_API_KEY') || config.get<string>('OPENAI_API_KEY') || '').trim();
     this.model = config.get<string>('AI_MODEL')?.trim() || 'gpt-4o-mini';
+    // Bản 7B chứ không phải 3B: đo trên cùng một ảnh tờ khai viết tay, bản 3B đọc
+    // đúng chữ nhưng bỏ trắng gần hết các dãy số dài (số hoá đơn, số vận đơn, ngày),
+    // tức là đúng phần dữ liệu quan trọng nhất của tờ khai.
+    this.visionModel = config.get<string>('AI_VISION_MODEL')?.trim() || 'qwen2.5vl:7b';
 
     const hasRealKey = rawKey && !rawKey.startsWith('sk-dummy') && !rawKey.startsWith('sk-placeholder');
     // Bật khi có API key thật, HOẶC khi trỏ tới máy chủ local như Ollama (không cần key).
@@ -110,6 +138,36 @@ export class AiService {
         maxRetries: 1,
       });
       this.warmUp();
+    }
+
+    // Đọc ảnh có thể trỏ sang nhà cung cấp khác phần trò chuyện. Không khai báo
+    // gì thì dùng chung client, tức là cùng chạy trên Ollama cục bộ.
+    const visionBaseURL = config.get<string>('AI_VISION_BASE_URL')?.trim();
+    const visionKey = (config.get<string>('AI_VISION_API_KEY') || '').trim();
+    if (visionBaseURL) {
+      this.visionClient = new OpenAI({
+        apiKey: visionKey || rawKey || 'not-needed',
+        baseURL: visionBaseURL,
+        timeout: AI_TIMEOUT_MS,
+        maxRetries: 1,
+      });
+      console.log(`🖼️  Đọc ảnh dùng nhà cung cấp riêng: ${visionBaseURL} (${this.visionModel})`);
+    } else {
+      this.visionClient = this.openai;
+    }
+
+    // Cửa sổ ngữ cảnh khi đọc ảnh. 8192 đủ cho một ảnh chụp cả tờ khai (~4800
+    // token) cộng phần JSON trả về; đặt cao hơn chỉ tốn thêm bộ nhớ GPU.
+    this.visionNumCtx = Number(config.get<string>('AI_VISION_NUM_CTX')) || 8192;
+
+    // Nhận diện Ollama để chuyển sang API riêng của nó. Cho phép chỉ định thẳng
+    // bằng AI_VISION_API_STYLE khi Ollama được đặt sau proxy ở cổng khác.
+    const style = config.get<string>('AI_VISION_API_STYLE')?.trim().toLowerCase();
+    const effectiveVisionUrl = visionBaseURL || baseURL || '';
+    const looksLikeOllama = /:11434(\/|$)/.test(effectiveVisionUrl);
+    if (style === 'ollama' || (style !== 'openai' && looksLikeOllama)) {
+      this.visionApiStyle = 'ollama';
+      this.visionOllamaUrl = effectiveVisionUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
     }
   }
 
@@ -666,6 +724,220 @@ export class AiService {
     return [];
   }
 
+  // ==================== ĐỌC ẢNH (chụp biểu mẫu giấy) ====================
+
+  /**
+   * Đọc tờ khai từ ẢNH CHỤP bản giấy đã điền tay.
+   *
+   * Khác hẳn Excel và PDF: ảnh không có lớp văn bản nào để dò nhãn, nên phải nhờ
+   * mô hình thị giác đọc chữ viết tay. Đổi lại, kết quả không bao giờ chắc chắn
+   * như đọc tệp số, vì vậy dữ liệu luôn được đưa về biểu mẫu cho người dùng soát
+   * lại chứ không lưu thẳng.
+   *
+   * Toàn bộ giá trị đọc được vẫn đi qua đúng bộ chuẩn hoá của hai đường kia
+   * (mã quốc gia, mã HS, tiền tệ, ngày, ô để trống), nên ba đường nhập liệu cho ra
+   * cùng một dạng dữ liệu.
+   */
+  async parseImage(buffer: Buffer, mimeType = 'image/jpeg'): Promise<ParsedForm> {
+    if (!this.visionClient && this.visionApiStyle !== 'ollama') {
+      throw new ServiceUnavailableException(
+        'Chức năng đọc ảnh cần mô hình thị giác. Hãy đặt AI_BASE_URL và AI_VISION_MODEL trong .env (ví dụ Ollama) rồi thử lại.',
+      );
+    }
+
+    const system = this.buildVisionSystemPrompt();
+    const instruction = 'Đọc tờ khai trong ảnh và trả về đúng một đối tượng JSON theo cấu trúc đã cho.';
+    let raw: string;
+    try {
+      raw =
+        this.visionApiStyle === 'ollama'
+          ? await this.askOllamaVision(system, instruction, buffer)
+          : await this.askOpenAiVision(system, instruction, buffer, mimeType);
+    } catch (err: any) {
+      throw this.describeAiFailure(err, this.visionModel);
+    }
+
+    const parsed = this.extractJson(raw);
+    if (!parsed) {
+      throw new ServiceUnavailableException(
+        'Mô hình không trả về dữ liệu đọc được từ ảnh. Hãy chụp lại rõ hơn (đủ sáng, thẳng góc, thấy trọn tờ khai) rồi thử lại.',
+      );
+    }
+    return this.assembleFromVision(parsed);
+  }
+
+  /**
+   * Gọi Ollama qua API riêng của nó để đặt được num_ctx (xem ghi chú ở visionApiStyle).
+   *
+   * Dùng fetch thẳng thay vì thư viện openai: đây là dạng yêu cầu mà thư viện đó
+   * không mô tả được (ảnh nằm ở trường "images" riêng, không phải data URL).
+   */
+  private async askOllamaVision(system: string, instruction: string, buffer: Buffer): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${this.visionOllamaUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.visionModel,
+          stream: false,
+          // Buộc mô hình trả về JSON hợp lệ, khỏi phải gỡ rào ```json hay câu dẫn.
+          format: 'json',
+          options: {
+            num_ctx: this.visionNumCtx,
+            // Nhiệt độ 0: đây là việc trích xuất dữ liệu, không phải viết văn -
+            // cần đọc đúng chữ trên giấy chứ không cần sáng tạo.
+            temperature: 0,
+            num_predict: 1600,
+          },
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: instruction, images: [buffer.toString('base64')] },
+          ],
+        }),
+      });
+
+      const body: any = await response.json().catch(() => null);
+      if (!response.ok || body?.error) {
+        throw new Error(String(body?.error || `Ollama trả về mã ${response.status}`));
+      }
+      return String(body?.message?.content ?? '').trim();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Gọi nhà cung cấp tương thích OpenAI (ảnh gửi dưới dạng data URL). */
+  private async askOpenAiVision(system: string, instruction: string, buffer: Buffer, mimeType: string): Promise<string> {
+    const dataUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+    const response = await this.visionClient!.chat.completions.create({
+      model: this.visionModel,
+      temperature: 0,
+      max_tokens: 1600,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: instruction },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ] as any,
+        },
+      ],
+    });
+    return response.choices[0]?.message?.content?.trim() || '';
+  }
+
+  /**
+   * Lời nhắc hệ thống cho mô hình thị giác.
+   *
+   * Nhãn trường được sinh trực tiếp từ CUSTOMS_FIELDS - cùng nguồn với phần xuất
+   * và đọc tệp, nên đổi nhãn biểu mẫu ở một chỗ là lời nhắc này đổi theo.
+   */
+  private buildVisionSystemPrompt(): string {
+    const fieldLines = CUSTOMS_FIELDS.map((f) => `  "${f.key}": chữ viết ở ô "${f.label}"`).join('\n');
+    // Cột STT bị loại khỏi danh sách hỏi mô hình, vì hai lẽ:
+    //
+    // 1. Không cần: số thứ tự dòng được đánh lại theo đúng trật tự đọc được
+    //    (xem assembleFromVision), nên câu trả lời của mô hình bị bỏ đi.
+    // 2. Có hại: đo trên cùng một ảnh, chỉ riêng việc thêm dòng '"itemNo" (cột STT)'
+    //    vào lời nhắc khiến mô hình 7B bỏ trắng cả hai ô ngày lẫn số tờ khai - lặp
+    //    lại 3/3 lần, bỏ dòng đó ra thì 3/3 lần đọc được. Lời nhắc càng nhiều mục
+    //    vụn thì mô hình nhỏ càng dễ đánh rơi những ô nó vốn đọc được.
+    const materialCols = MATERIAL_COLUMNS.filter((c) => c.key !== 'itemNo')
+      .map((c) => `"${c.key}" (cột ${c.label})`)
+      .join(', ');
+
+    return `Bạn là bộ trích xuất dữ liệu từ ảnh chụp tờ khai hải quan Việt Nam đã điền tay.
+
+Biểu mẫu có tiêu đề "TỜ KHAI HÀNG HÓA XUẤT KHẨU, NHẬP KHẨU", gồm các khối: THÔNG TIN CHUNG,
+BÊN XUẤT KHẨU, BÊN NHẬP KHẨU, CHỨNG TỪ, TÀI CHÍNH, bảng HÀNH TRÌNH VẬN CHUYỂN và bảng
+DANH MỤC HÀNG HÓA / VẬT TƯ.
+
+Trả về DUY NHẤT một đối tượng JSON, không kèm giải thích, không bọc trong khối mã.
+Cấu trúc:
+{
+${fieldLines}
+  "journeys": [ { "legNumber": số, "transportType": chữ ở cột Loại vận chuyển, "origin": Điểm đi, "destination": Điểm đến } ],
+  "materials": [ { ${materialCols} } ]
+}
+
+QUY TẮC BẮT BUỘC:
+- Chỉ đọc đúng chữ nhìn thấy trên giấy. TUYỆT ĐỐI KHÔNG suy diễn, không tự bù thông tin thiếu.
+- Ô nào để trống, hoặc chỉ có dấu gạch ngang, dấu chấm lửng, thì trả về chuỗi rỗng "".
+- Chỉ đưa vào "journeys" và "materials" những dòng CÓ chữ viết tay. Dòng trống thì bỏ hẳn.
+- Ngày giữ nguyên đúng như trên giấy, ví dụ "11/8/2026".
+- Khối THÔNG TIN CHUNG có ba dòng theo đúng thứ tự từ trên xuống: "Ngày bắt đầu vận
+  chuyển", rồi "Ngày kết thúc vận chuyển", rồi "Số hiệu chuyến". Đọc theo đúng thứ tự
+  dòng, không đảo hai ô ngày cho nhau.
+- Số tiền và số lượng chỉ lấy phần chữ số, bỏ dấu phân cách nghìn.
+- Không đọc phần chữ ký, tên người ký và dòng địa điểm - ngày tháng ở cuối trang.
+- Nếu một ô khó đọc, trả về chuỗi rỗng thay vì đoán.`;
+  }
+
+  /** Lấy đối tượng JSON đầu tiên trong câu trả lời, kể cả khi bị bọc trong ```json. */
+  private extractJson(text: string): any | null {
+    const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Đưa dữ liệu mô hình đọc được về đúng dạng ParsedForm như hai đường kia. */
+  private assembleFromVision(data: any): ParsedForm {
+    const fields: Partial<Record<CustomsFieldKey, string>> = {};
+    for (const def of CUSTOMS_FIELDS) {
+      const value = data?.[def.key];
+      if (value == null) continue;
+      const text = String(value).trim();
+      if (text && !isPlaceholderText(text)) fields[def.key] = text;
+    }
+
+    const journeys: ParsedJourney[] = (Array.isArray(data?.journeys) ? data.journeys : [])
+      .map((j: any, index: number) => ({
+        legNumber: this.toNumber(j?.legNumber) || index + 1,
+        transportType: normalizeTransport(j?.transportType) || 'ROAD',
+        origin: String(j?.origin ?? '').trim(),
+        destination: String(j?.destination ?? '').trim(),
+      }))
+      .filter((j: ParsedJourney) => !isPlaceholderText(j.origin) || !isPlaceholderText(j.destination));
+
+    const materials: ParsedMaterial[] = (Array.isArray(data?.materials) ? data.materials : [])
+      .map((m: any, index: number) => ({
+        itemNo: this.toNumber(m?.itemNo) || index + 1,
+        hsCode: normalizeHsCode(m?.hsCode) || undefined,
+        description: String(m?.description ?? '').trim(),
+        quantity: this.toNumber(m?.quantity),
+        unit: String(m?.unit ?? '').trim() || 'cái',
+        unitPrice: this.toNumber(m?.unitPrice),
+        // Xuất xứ viết tay hay ở dạng tên nước ("T.Quốc", "Trung Quốc") nên phải
+        // quy về mã ISO giống hai đường đọc tệp.
+        origin: normalizeCountryCode(m?.origin),
+        weight: this.toNumber(m?.weight) || undefined,
+      }))
+      .filter((m: ParsedMaterial) => m.description && !isPlaceholderText(m.description));
+
+    const form = this.assemble(fields, journeys, materials);
+
+    // Hai ô ngày nằm sát nhau trên giấy nên mô hình thị giác có lúc đọc đảo thứ tự.
+    // Vận chuyển không thể kết thúc trước khi bắt đầu, nên gặp cặp ngược thì đổi lại
+    // - còn hơn để người dùng nhận một cặp ngày vô nghĩa rồi tự đoán chỗ sai.
+    if (form.exitDate && form.exitDate < form.entryDate) {
+      const earlier = form.exitDate;
+      form.exitDate = form.entryDate;
+      form.entryDate = earlier;
+    }
+    return form;
+  }
+
   // ==================== Chat AI ====================
 
   async chat(message: string, userId?: string): Promise<string> {
@@ -726,23 +998,7 @@ QUY TẮC TRẢ LỜI:
       });
       reply = response.choices[0]?.message?.content?.trim() || 'Xin lỗi, tôi chưa có câu trả lời phù hợp.';
     } catch (err: any) {
-      // Phân biệt rõ các nguyên nhân: người dùng cần biết phải mở Ollama lên hay
-      // chỉ cần hỏi lại, thay vì nhận chung một câu "có lỗi xảy ra".
-      const detail = String(err?.message || '');
-      const isTimeout = /timeout|aborted|ETIMEDOUT/i.test(detail);
-      const isOffline = /ECONNREFUSED|fetch failed|ENOTFOUND|socket hang up/i.test(detail);
-
-      if (isOffline) {
-        throw new ServiceUnavailableException(
-          'Chưa kết nối được tới Ollama. Hãy kiểm tra Ollama đã chạy trên máy chưa (mở ứng dụng Ollama hoặc chạy lệnh "ollama serve").',
-        );
-      }
-      if (isTimeout) {
-        throw new ServiceUnavailableException(
-          'Trợ lý AI phản hồi quá lâu. Lần hỏi đầu tiên cần nạp mô hình vào bộ nhớ nên có thể mất tới một phút — vui lòng thử lại.',
-        );
-      }
-      throw new ServiceUnavailableException(`Không gọi được trợ lý AI (${this.model}). Chi tiết: ${detail || 'lỗi không xác định'}`);
+      throw this.describeAiFailure(err, this.model);
     }
 
     if (userId) {
@@ -755,5 +1011,33 @@ QUY TẮC TRẢ LỜI:
     }
 
     return reply;
+  }
+
+  /**
+   * Dịch lỗi gọi mô hình thành thông báo chỉ ra việc cần làm.
+   *
+   * Người dùng cần biết phải mở Ollama lên, phải tải mô hình về, hay chỉ cần thử
+   * lại - một câu "có lỗi xảy ra" chung chung thì không giúp họ làm gì tiếp.
+   */
+  private describeAiFailure(err: any, model: string): ServiceUnavailableException {
+    const detail = String(err?.message || '');
+
+    if (/ECONNREFUSED|fetch failed|ENOTFOUND|socket hang up/i.test(detail)) {
+      return new ServiceUnavailableException(
+        'Chưa kết nối được tới Ollama. Hãy kiểm tra Ollama đã chạy trên máy chưa (mở ứng dụng Ollama hoặc chạy lệnh "ollama serve").',
+      );
+    }
+    // Ollama trả 404 kèm "model not found" khi mô hình chưa được tải về máy.
+    if (/not found|404|no such model|pull the model/i.test(detail)) {
+      return new ServiceUnavailableException(
+        `Chưa có mô hình "${model}" trên máy. Hãy chạy lệnh: ollama pull ${model}`,
+      );
+    }
+    if (/timeout|aborted|ETIMEDOUT/i.test(detail)) {
+      return new ServiceUnavailableException(
+        'Mô hình phản hồi quá lâu. Lần gọi đầu tiên cần nạp mô hình vào bộ nhớ nên có thể mất tới một phút — vui lòng thử lại.',
+      );
+    }
+    return new ServiceUnavailableException(`Không gọi được mô hình AI (${model}). Chi tiết: ${detail || 'lỗi không xác định'}`);
   }
 }

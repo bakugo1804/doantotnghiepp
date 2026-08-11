@@ -94,12 +94,12 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
         processing: 'Đang xử lý',
         processingHint: 'Cần ưu tiên theo dõi',
         totalValue: 'Tổng giá trị',
-        totalValueHint: 'Đã quy đổi về USD',
+        totalValueHint: 'Đã quy đổi về',
         approved: 'Đã duyệt',
         approvedHint: 'Hồ sơ đã được thông qua',
         vsLastMonth: 'so với tháng trước',
         trendTitle: 'Tờ khai theo tháng',
-        trendSubtitle: '12 tháng gần nhất, tính theo ngày nhập cảnh',
+        trendSubtitle: '12 tháng gần nhất, tính theo ngày bắt đầu vận chuyển',
         trendUnit: 'tờ khai',
         statusTitle: 'Phân bổ trạng thái',
         statusSubtitle: 'Tỷ trọng hồ sơ theo từng bước xử lý',
@@ -134,12 +134,12 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
         processing: 'In progress',
         processingHint: 'Needs immediate attention',
         totalValue: 'Total value',
-        totalValueHint: 'Normalised to USD',
+        totalValueHint: 'Normalised to',
         approved: 'Approved',
         approvedHint: 'Records cleared for release',
         vsLastMonth: 'vs last month',
         trendTitle: 'Declarations per month',
-        trendSubtitle: 'Last 12 months, by entry date',
+        trendSubtitle: 'Last 12 months, by transport start date',
         trendUnit: 'records',
         statusTitle: 'Status distribution',
         statusSubtitle: 'Share of records at each processing step',
@@ -260,7 +260,9 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
         <StatTile
           label={copy.totalValue}
           value={money(totalPayable)}
-          hint={copy.totalValueHint}
+          // Ghi đúng đồng tiền đang hiển thị. Nhãn cứng "Đã quy đổi về USD" là sai
+          // hẳn khi người dùng đang xem bằng VND.
+          hint={`${copy.totalValueHint} ${display}`}
           icon={CircleDollarSign}
           loading={isStatsLoading}
         />

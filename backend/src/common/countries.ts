@@ -9,13 +9,17 @@
 
 import { normalizeLabel } from './customs-form';
 
+// Ngoài tên đầy đủ, danh sách này còn nhận các lối viết tắt hay gặp khi người khai
+// điền tay vào tờ khai giấy ("T.Quốc", "TQ", "N.Bản"). Ảnh chụp bản giấy được mô
+// hình thị giác đọc nguyên văn, nên không nhận ra các lối viết này thì cột xuất xứ
+// bị bỏ trống - mà xuất xứ lại quyết định thuế nhập khẩu ưu đãi.
 const COUNTRY_NAMES: Record<string, string[]> = {
-  VN: ['Việt Nam', 'Vietnam', 'Viet Nam'],
-  CN: ['Trung Quốc', 'China'],
+  VN: ['Việt Nam', 'Vietnam', 'Viet Nam', 'V.Nam'],
+  CN: ['Trung Quốc', 'China', 'T.Quốc', 'TQ'],
   US: ['Hoa Kỳ', 'Mỹ', 'United States', 'USA', 'US'],
-  KR: ['Hàn Quốc', 'South Korea', 'Korea'],
-  JP: ['Nhật Bản', 'Japan'],
-  TH: ['Thái Lan', 'Thailand'],
+  KR: ['Hàn Quốc', 'South Korea', 'Korea', 'H.Quốc', 'HQ', 'Nam Hàn'],
+  JP: ['Nhật Bản', 'Japan', 'N.Bản', 'NB'],
+  TH: ['Thái Lan', 'Thailand', 'T.Lan'],
   SG: ['Singapore'],
   MY: ['Malaysia'],
   ID: ['Indonesia'],
@@ -23,9 +27,9 @@ const COUNTRY_NAMES: Record<string, string[]> = {
   KH: ['Campuchia', 'Cambodia'],
   LA: ['Lào', 'Laos'],
   MM: ['Myanmar'],
-  IN: ['Ấn Độ', 'India'],
-  TW: ['Đài Loan', 'Taiwan'],
-  HK: ['Hồng Kông', 'Hong Kong'],
+  IN: ['Ấn Độ', 'India', 'Ấn'],
+  TW: ['Đài Loan', 'Taiwan', 'Đ.Loan'],
+  HK: ['Hồng Kông', 'Hong Kong', 'H.Kông', 'HK'],
   AU: ['Úc', 'Australia'],
   NZ: ['New Zealand'],
   EU: ['Liên minh châu Âu', 'European Union', 'Châu Âu'],

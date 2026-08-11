@@ -6,7 +6,7 @@ import { COUNTRIES, UNITS, unitLabel } from '@/lib/reference-data';
 import { useHsCodes } from '@/hooks/useHsCodes';
 import { formatMoney, convertMoney, DEFAULT_EXCHANGE_RATE, normalizeCurrency } from '@/lib/money';
 import { isValidHsCode, normalizeHsCode, previewTotals } from '@/lib/tax-rules';
-import { FileSpreadsheet, FileText, Loader2, CheckCircle, Plus, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, FileText, Loader2, CheckCircle, Plus, Trash2, Camera, AlertTriangle } from 'lucide-react';
 
 type Step = 'upload' | 'preview' | 'done';
 type TransportType = 'AIR' | 'SEA' | 'RAIL' | 'ROAD';
@@ -67,6 +67,8 @@ export function ImportExcel() {
   const [form, setForm] = useState<CustomsForm | null>(null);
   const [error, setError] = useState('');
   const [recordNoTaken, setRecordNoTaken] = useState(false);
+  /** Nguồn dữ liệu là ảnh chụp hay tệp số - quyết định lời nhắc hiển thị cho người dùng. */
+  const [fromImage, setFromImage] = useState(false);
 
   // Danh mục mã HS dùng chung với trang tạo tờ khai.
   const { data: hsCodes = [] } = useHsCodes();
@@ -116,6 +118,10 @@ export function ImportExcel() {
   const handleFile = async (file: File) => {
     setLoading(true);
     setError('');
+    // Ảnh chụp phải nhờ mô hình thị giác đọc chữ viết tay nên chậm hơn hẳn đọc tệp
+    // số; cần nói trước để người dùng không tưởng là treo.
+    const isImage = /^image\//i.test(file.type) || /\.(jpe?g|png|webp)$/i.test(file.name);
+    setFromImage(isImage);
     try {
       const res = await aiApi.parseFile(file);
       const data = res.data;
@@ -158,7 +164,12 @@ export function ImportExcel() {
       });
       setStep('preview');
     } catch (e: any) {
-      setError('Không thể đọc file. Vui lòng dùng đúng mẫu (Excel .xlsx hoặc PDF có lớp văn bản) và kiểm tra định dạng.');
+      // Lỗi từ máy chủ nói rõ hơn nhiều (chưa cài mô hình, ảnh quá lớn, mô hình
+      // trả về dữ liệu không đọc được), nên ưu tiên hiện nguyên văn.
+      const fromServer = e.response?.data?.message;
+      if (fromServer) setError(String(fromServer));
+      else if (isImage) setError('Không đọc được ảnh. Hãy chụp lại rõ hơn: đủ sáng, chụp thẳng, lấy trọn cả tờ khai trong khung.');
+      else setError('Không thể đọc file. Vui lòng dùng đúng mẫu (Excel .xlsx hoặc PDF có lớp văn bản) và kiểm tra định dạng.');
     } finally {
       setLoading(false);
     }
@@ -339,7 +350,7 @@ export function ImportExcel() {
       <p className="text-gray-500 mb-6">Tờ khai đã được tạo từ file</p>
       <div className="flex justify-center gap-3">
         <button onClick={() => router.push('/dashboard/customs')} className="bg-blue-600 text-white px-6 py-2.5 rounded-lg hover:bg-blue-700 transition">Xem danh sách tờ khai</button>
-        <button onClick={() => { setStep('upload'); setForm(null); }} className="border border-gray-300 text-gray-700 px-6 py-2.5 rounded-lg hover:bg-gray-50 transition">Nhập file khác</button>
+        <button onClick={() => { setStep('upload'); setForm(null); setFromImage(false); }} className="border border-gray-300 text-gray-700 px-6 py-2.5 rounded-lg hover:bg-gray-50 transition">Nhập file khác</button>
       </div>
     </div>
   );
@@ -368,18 +379,30 @@ export function ImportExcel() {
           onClick={() => fileRef.current?.click()}
           className="bg-white border-2 border-dashed border-gray-300 hover:border-blue-500 rounded-xl p-16 text-center cursor-pointer transition group"
         >
-          <input ref={fileRef} type="file" accept=".xlsx,.xls,.pdf" className="hidden"
+          {/* `capture` để trên điện thoại bấm vào là mở thẳng máy ảnh, chụp tờ khai giấy. */}
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.pdf,.jpg,.jpeg,.png,.webp,image/*" className="hidden"
             onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
           {loading ? (
             <div className="flex flex-col items-center gap-3">
               <Loader2 className="h-12 w-12 animate-spin text-blue-500" />
-              <p className="text-gray-600">Đang đọc file...</p>
+              <p className="text-gray-600">{fromImage ? 'Đang nhận dạng chữ trên ảnh...' : 'Đang đọc file...'}</p>
+              {fromImage && (
+                <p className="max-w-md text-sm text-gray-400">
+                  Đọc ảnh viết tay mất lâu hơn đọc tệp Excel/PDF: thường khoảng 15 giây, lần đầu sau khi bật máy chậm hơn (30-40 giây) vì phải nạp mô hình. Vui lòng đừng đóng trang.
+                </p>
+              )}
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
-              <FileSpreadsheet className="h-16 w-16 text-gray-300 group-hover:text-blue-500 transition" />
+              <div className="flex items-center gap-3 text-gray-300 transition group-hover:text-blue-500">
+                <FileSpreadsheet className="h-14 w-14" />
+                <Camera className="h-14 w-14" />
+              </div>
               <p className="text-lg font-medium text-gray-700">Kéo thả hoặc click để upload</p>
-              <p className="text-gray-400 text-sm">Hỗ trợ Excel (.xlsx, .xls) và PDF (.pdf)</p>
+              <p className="text-gray-400 text-sm">Hỗ trợ Excel (.xlsx, .xls), PDF (.pdf) và ảnh chụp tờ khai giấy (.jpg, .png, .webp)</p>
+              <p className="max-w-lg text-xs text-gray-400">
+                Chụp tờ khai đã điền tay: đặt tờ khai trên mặt phẳng, đủ sáng, chụp thẳng từ trên xuống và lấy trọn cả tờ trong khung.
+              </p>
             </div>
           )}
         </div>
@@ -392,6 +415,21 @@ export function ImportExcel() {
       {step === 'preview' && form && (
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-800 mb-4">📝 Kiểm tra & chỉnh sửa dữ liệu</h2>
+
+          {/* Đọc chữ viết tay không bao giờ chắc chắn 100%. Bước xem trước này là
+              bắt buộc phải rà lại, nên nói thẳng ra thay vì để người dùng tin tưởng
+              rồi bấm tạo tờ khai với số sai. */}
+          {fromImage && (
+            <div className="mb-5 flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium">Dữ liệu đọc từ ảnh viết tay - hãy đối chiếu lại với bản giấy trước khi tạo tờ khai.</p>
+                <p className="mt-1 text-amber-700">
+                  Chữ viết tay dễ bị đọc lệch, nhất là chữ số (0/6, 1/7) và mã HS. Những ô nhận dạng không chắc sẽ để trống thay vì đoán bừa.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mb-6">
             <div>
@@ -611,7 +649,7 @@ export function ImportExcel() {
           {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-sm mb-4">{error}</div>}
 
           <div className="flex gap-3 justify-end">
-            <button onClick={() => { setStep('upload'); setForm(null); setError(''); }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition">Upload lại</button>
+            <button onClick={() => { setStep('upload'); setForm(null); setError(''); setFromImage(false); }} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition">Upload lại</button>
             <button onClick={handleImport} disabled={loading || recordNoTaken} className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition flex items-center gap-2">
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               Tạo tờ khai

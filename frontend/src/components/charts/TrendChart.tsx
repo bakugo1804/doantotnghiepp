@@ -110,6 +110,17 @@ export function TrendChart({ data, height = 260, formatValue = compactNumber, va
               <stop offset="0%" stopColor="var(--viz-accent)" stopOpacity="0.18" />
               <stop offset="100%" stopColor="var(--viz-accent)" stopOpacity="0.01" />
             </linearGradient>
+            {/* Chặn phòng xa: nếu thang đo có sai thì đường vẫn bị cắt trong khung
+                vẽ chứ không tràn ra đè lên các thẻ khác của trang. Chừa 2px phía
+                trên để nét vẽ dày 2px ở đúng mốc cao nhất không bị cắt mất một nửa. */}
+            <clipPath id={`${gradientId}-plot`}>
+              <rect
+                x={PADDING.left}
+                y={PADDING.top - 2}
+                width={innerWidth}
+                height={innerHeight + 2}
+              />
+            </clipPath>
           </defs>
 
           {/* Lưới hairline liền nét, lùi hẳn về sau so với dữ liệu */}
@@ -135,15 +146,17 @@ export function TrendChart({ data, height = 260, formatValue = compactNumber, va
             </g>
           ))}
 
-          <path d={areaPath} fill={`url(#${gradientId})`} />
-          <path
-            d={linePath}
-            fill="none"
-            stroke="var(--viz-accent)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          <g clipPath={`url(#${gradientId}-plot)`}>
+            <path d={areaPath} fill={`url(#${gradientId})`} />
+            <path
+              d={linePath}
+              fill="none"
+              stroke="var(--viz-accent)"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </g>
 
           {/* Nhãn trục X — thưa bớt khi hẹp để chữ không chồng lên nhau */}
           {data.map((datum, index) => {
