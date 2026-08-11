@@ -1,15 +1,25 @@
 'use client';
 import { useRouter, useParams } from 'next/navigation';
 import { useCustomsOne, useCustomsTransitions, useUpdateCustomsStatus, useDeleteCustoms } from '@/hooks/useCustoms';
-import { formatDate, formatDateTime, formatCurrency, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
-import { ArrowLeft, ChevronRight, Download, FileText, GitBranch, History, Trash2, Loader2, CheckCircle } from 'lucide-react';
+import { formatDate, formatDateTime, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { ArrowLeft, ChevronRight, Download, FileText, GitBranch, History, Trash2, Loader2, CheckCircle, Pencil, Undo2 } from 'lucide-react';
 import { useState } from 'react';
+import Link from 'next/link';
 import { reportsApi, downloadBlob } from '@/lib/api';
 import { RecordTasksPanel } from '@/components/customs/RecordTasksPanel';
+import { CurrencyToggle, Money } from '@/components/settings/CurrencyProvider';
+import { countryLabel, unitLabel } from '@/lib/reference-data';
 import type { CustomsStatus, Journey } from '@/types';
 
 /** Đường đi thuận lợi của hồ sơ; REJECTED là nhánh rẽ nên không nằm trong dãy này. */
 const WORKFLOW_STEPS = ['DRAFT', 'SUBMITTED', 'PROCESSING', 'APPROVED', 'COMPLETED'] as const;
+
+/** Bước đi ngược quy trình - phải trông khác bước tiến để không ai bấm nhầm. */
+const isBackwardStep = (from: string, to: string) => {
+  const fromIndex = WORKFLOW_STEPS.indexOf(from as any);
+  const toIndex = WORKFLOW_STEPS.indexOf(to as any);
+  return fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex;
+};
 
 export default function CustomsDetailPage() {
   const router = useRouter();
@@ -65,6 +75,13 @@ export default function CustomsDetailPage() {
 
   const status = STATUS_LABELS[record.status];
 
+  /** Số ngày đi đường, tính từ hai mốc đầu - cuối của hành trình. */
+  const transportDays = (() => {
+    if (!record.exitDate) return null;
+    const days = Math.round((new Date(record.exitDate).getTime() - new Date(record.entryDate).getTime()) / 86_400_000);
+    return Number.isFinite(days) && days >= 0 ? days : null;
+  })();
+
   return (
     <div>
       {/* Header */}
@@ -75,11 +92,22 @@ export default function CustomsDetailPage() {
           </button>
           <div>
             <h1 className="text-3xl font-bold text-gray-900">{record.recordNo}</h1>
-            <p className="text-gray-500 text-sm mt-1">Ngày nhập: {formatDate(record.entryDate)}</p>
+            {/* Hai mốc này là điểm đầu và điểm cuối của HÀNH TRÌNH VẬN CHUYỂN, nên
+                hiện kèm số ngày đi đường - đó là thông tin người đọc thực sự cần,
+                và cũng làm rõ ngay rằng đây không phải "ngày nhập/xuất khẩu". */}
+            <p className="mt-1 text-sm text-gray-500">
+              Vận chuyển: <span className="font-medium text-gray-700">{formatDate(record.entryDate)}</span>
+              <span className="mx-1.5 text-gray-400">→</span>
+              <span className="font-medium text-gray-700">{record.exitDate ? formatDate(record.exitDate) : 'chưa kết thúc'}</span>
+              {transportDays != null && <span className="ml-2 text-gray-400">({transportDays} ngày)</span>}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
           <span className={`px-3 py-1.5 rounded-full text-sm font-medium ${status?.color}`}>{status?.label}</span>
+          <Link href={`/dashboard/customs/${record.id}/edit`} className="rounded-lg bg-blue-100 p-2.5 text-blue-600 transition hover:bg-blue-200" title="Sửa tờ khai">
+            <Pencil className="h-5 w-5" />
+          </Link>
           <button onClick={handleExport} className="p-2.5 bg-green-100 text-green-600 hover:bg-green-200 rounded-lg transition" title="Xuất Excel">
             <Download className="h-5 w-5" />
           </button>
@@ -142,19 +170,35 @@ export default function CustomsDetailPage() {
               className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
             />
             <div className="flex flex-wrap gap-2">
-              {nextSteps.map((step: { status: CustomsStatus; label: string }) => (
-                <button
-                  key={step.status}
-                  onClick={() => handleStatusChange(step.status)}
-                  disabled={updateStatus.isPending}
-                  className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition disabled:opacity-50 ${
-                    step.status === 'REJECTED' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-blue-600 hover:bg-blue-700'
-                  }`}
-                >
-                  {updateStatus.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-                  {step.label}
-                </button>
-              ))}
+              {nextSteps.map((step: { status: CustomsStatus; label: string }) => {
+                const backward = isBackwardStep(record.status, step.status);
+                return (
+                  <button
+                    key={step.status}
+                    onClick={() => handleStatusChange(step.status)}
+                    disabled={updateStatus.isPending}
+                    title={backward ? `Đưa hồ sơ trở lại bước "${step.label}"` : `Chuyển hồ sơ sang bước "${step.label}"`}
+                    className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition disabled:opacity-50 ${
+                      step.status === 'REJECTED'
+                        ? 'bg-rose-600 text-white hover:bg-rose-700'
+                        : backward
+                          // Bước lùi dùng nút viền thay vì nút đặc: nó là thao tác
+                          // sửa sai, không phải bước đi bình thường của quy trình.
+                          ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                  >
+                    {updateStatus.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : backward ? (
+                      <Undo2 className="h-4 w-4" />
+                    ) : (
+                      <CheckCircle className="h-4 w-4" />
+                    )}
+                    {backward ? `Quay lại: ${step.label}` : step.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -245,41 +289,100 @@ export default function CustomsDetailPage() {
           </div>
         </div>
 
-        {/* Đơn vị */}
+        {/* Đơn vị - quốc gia và địa chỉ đã khai nhưng trước đây không hiện ở đâu cả,
+            dù chính quốc gia nhập khẩu mới là căn cứ tính thuế VAT của hồ sơ. */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-800 mb-4">🏢 Đơn vị</h2>
-          <div className="space-y-3 text-sm">
-            <div><span className="text-gray-600">Xuất khẩu:</span><span className="block font-medium">{record.exporterName}</span></div>
-            <div><span className="text-gray-600">Nhập khẩu:</span><span className="block font-medium">{record.importerName}</span></div>
+          <div className="space-y-4 text-sm">
+            {[
+              { role: 'Xuất khẩu', name: record.exporterName, country: record.exporterCountry, address: record.exporterAddress },
+              { role: 'Nhập khẩu', name: record.importerName, country: record.importerCountry, address: record.importerAddress },
+            ].map((party) => (
+              <div key={party.role}>
+                <span className="text-gray-600">{party.role}:</span>
+                <span className="block font-medium">{party.name}</span>
+                <span className="block text-xs text-gray-500">{countryLabel(party.country)}</span>
+                {party.address && <span className="block text-xs text-gray-500">{party.address}</span>}
+              </div>
+            ))}
+            {record.invoiceNo && (
+              <div className="flex justify-between border-t border-gray-100 pt-3">
+                <span className="text-gray-600">Số hoá đơn:</span><span className="font-medium">{record.invoiceNo}</span>
+              </div>
+            )}
+            {record.billOfLading && (
+              <div className="flex justify-between"><span className="text-gray-600">Số vận đơn:</span><span className="font-medium">{record.billOfLading}</span></div>
+            )}
+            {record.containerNo && (
+              <div className="flex justify-between"><span className="text-gray-600">Số container:</span><span className="font-medium">{record.containerNo}</span></div>
+            )}
+            {record.notes && <p className="border-t border-gray-100 pt-3 text-gray-600">Ghi chú: {record.notes}</p>}
           </div>
         </div>
       </div>
 
-      {/* Tài chính */}
+      {/* Tài chính - mọi con số bấm được để đổi qua lại USD ⇄ VND. Trước đây thuế
+          và phí vận chuyển luôn in ra kèm ký hiệu USD kể cả khi tờ khai ghi bằng
+          VND, nên ba ô trong cùng một thẻ có thể đang nói ba đơn vị khác nhau. */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="font-semibold text-gray-800 mb-4">💰 Tài chính</h2>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-semibold text-gray-800">💰 Tài chính</h2>
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <span>Tờ khai ghi bằng {record.currency} · 1 USD = {(record.exchangeRate || 25000).toLocaleString('vi-VN')} VND</span>
+            <CurrencyToggle />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {[
-            { label: 'Tổng giá trị', value: formatCurrency(record.totalValue, record.currency) },
-            { label: 'Thuế VAT', value: `${record.vatRate}% (${formatCurrency(record.vatAmount)})` },
-            { label: 'Phí vận chuyển', value: formatCurrency(record.shippingFee) },
-            { label: 'Tổng thanh toán', value: formatCurrency(record.totalPayable, record.currency), bold: true },
+            { label: 'Tổng giá trị hàng', value: record.totalValue, hint: null },
+            {
+              label: `Thuế nhập khẩu (${record.importDutyRate ?? 0}%)`,
+              value: record.importDutyAmount ?? 0,
+              hint: (record.importDutyRate ?? 0) === 0 ? 'Hàng cùng nước xuất xứ' : 'Theo mã HS & xuất xứ',
+            },
+            { label: `Thuế VAT (${record.vatRate}%)`, value: record.vatAmount, hint: 'Trên trị giá đã có thuế NK' },
+            {
+              label: 'Phí vận chuyển',
+              value: record.shippingFee,
+              hint: `${(record.totalWeight ?? 0).toLocaleString('vi-VN')} kg · ${TRANSPORT_LABELS[record.transportType]}`,
+            },
           ].map((f) => (
-            <div key={f.label} className={`p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg border border-blue-100 ${f.bold ? 'col-span-4' : ''}`}>
+            <div key={f.label} className="rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 to-indigo-50 p-4">
               <p className="text-sm text-gray-600">{f.label}</p>
-              <p className={`${f.bold ? 'text-2xl' : 'text-xl'} font-bold text-blue-600`}>{f.value}</p>
+              <Money
+                value={f.value}
+                currency={record.currency}
+                rate={record.exchangeRate}
+                showOriginal
+                className="text-xl font-bold text-blue-600"
+              />
+              {f.hint && <p className="mt-0.5 text-[11px] text-gray-500">{f.hint}</p>}
             </div>
           ))}
+          <div className="col-span-2 rounded-lg border border-blue-200 bg-gradient-to-br from-blue-100 to-indigo-100 p-4 lg:col-span-3">
+            <p className="text-sm text-gray-600">Tổng thanh toán</p>
+            <Money
+              value={record.totalPayable}
+              currency={record.currency}
+              rate={record.exchangeRate}
+              showOriginal
+              className="text-2xl font-bold text-blue-700"
+            />
+          </div>
         </div>
       </div>
 
-      {/* Vật tư */}
+      {/* Vật tư - đơn giá và tổng trước đây in thẳng dấu "$" vào chuỗi nên tờ khai
+          ghi bằng VND vẫn hiện ra như tiền đô, và không có cách nào đổi đơn vị. */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h2 className="font-semibold text-gray-800 mb-4">📦 Vật tư</h2>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-semibold text-gray-800">📦 Vật tư</h2>
+          <CurrencyToggle />
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="bg-gray-50 border-b border-gray-200">
-              {['STT', 'Mã HS', 'Mô tả', 'Số lượng', 'Đơn vị', 'Đơn giá', 'Tổng', 'Xuất xứ'].map((h) => (
+              {['STT', 'Mã HS', 'Mô tả', 'Số lượng', 'Đơn vị', 'Đơn giá', 'Tổng', 'Xuất xứ', 'Trọng lượng'].map((h) => (
                 <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-600">{h}</th>
               ))}
             </tr></thead>
@@ -289,13 +392,21 @@ export default function CustomsDetailPage() {
                   <td className="px-4 py-3">{i + 1}</td>
                   <td className="px-4 py-3 font-mono text-xs">{m.hsCode || '-'}</td>
                   <td className="px-4 py-3">{m.description}</td>
-                  <td className="px-4 py-3">{m.quantity}</td>
-                  <td className="px-4 py-3">{m.unit}</td>
-                  <td className="px-4 py-3">${m.unitPrice}</td>
-                  <td className="px-4 py-3 font-medium">${m.totalPrice}</td>
-                  <td className="px-4 py-3">{m.origin || '-'}</td>
+                  <td className="px-4 py-3 tabular-nums">{m.quantity}</td>
+                  <td className="px-4 py-3">{unitLabel(m.unit)}</td>
+                  <td className="px-4 py-3">
+                    <Money value={m.unitPrice} currency={record.currency} rate={record.exchangeRate} />
+                  </td>
+                  <td className="px-4 py-3 font-medium">
+                    <Money value={m.totalPrice} currency={record.currency} rate={record.exchangeRate} />
+                  </td>
+                  <td className="px-4 py-3">{countryLabel(m.origin)}</td>
+                  <td className="px-4 py-3 tabular-nums">{m.weight != null ? `${m.weight} kg` : '—'}</td>
                 </tr>
               ))}
+              {!record.materials?.length && (
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">Tờ khai này chưa có dòng vật tư nào.</td></tr>
+              )}
             </tbody>
           </table>
         </div>

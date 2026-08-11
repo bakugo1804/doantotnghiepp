@@ -1,12 +1,14 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomsDto } from './dto/create-customs.dto';
-import { calculateShippingFee, DEFAULT_EXCHANGE_RATE, getVatRateByCountry } from './financial-rules';
+import { calcDeclarationTotals, calcMaterialTax, DEFAULT_EXCHANGE_RATE } from './financial-rules';
+import { HsCodesService, normalizeHsCode } from '../hs-codes/hs-codes.service';
 import {
   ALLOWED_TRANSITIONS,
   canRoleSet,
   canTransition,
   CustomsStatus,
+  isBackwardTransition,
   isValidStatus,
   nextStatusesFor,
   STATUS_LABELS,
@@ -17,9 +19,22 @@ type AuthUser = { sub: string; role: string; companyId?: string | null };
 /** Số tháng hiển thị trên biểu đồ xu hướng của dashboard. */
 const TREND_MONTHS = 12;
 
+/** Cấp được sửa nội dung hồ sơ đã duyệt và được kéo hồ sơ lùi lại. */
+const MANAGER_ROLES = ['ADMIN', 'DIRECTOR'];
+
+/**
+ * Hồ sơ đã mang hiệu lực quyết định. Nhân viên vẫn sửa được hồ sơ ở các trạng
+ * thái khác (kể cả "Đã nộp" hay "Đang xử lý" - sai sót thường lộ ra đúng lúc đó),
+ * nhưng sửa một hồ sơ đã duyệt thì phải là cấp quản lý.
+ */
+const LOCKED_FOR_STAFF: CustomsStatus[] = ['APPROVED', 'COMPLETED'];
+
 @Injectable()
 export class CustomsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private hsCodes: HsCodesService,
+  ) {}
 
   private toRecordScope(_user: AuthUser) {
     // Hệ thống dùng cho 1 tổ chức duy nhất -> mọi vai trò xem chung dữ liệu.
@@ -33,15 +48,53 @@ export class CustomsService {
     return { available: !existing };
   }
 
-  private calcFinancials(materials: any[], vatRate: number, shippingFee: number) {
-    const totalValue = materials.reduce((sum, m) => sum + m.quantity * m.unitPrice, 0);
-    const vatAmount = (totalValue * vatRate) / 100;
-    const totalPayable = totalValue + vatAmount + shippingFee;
-    return {
-      totalValue: Number(totalValue.toFixed(2)),
-      vatAmount: Number(vatAmount.toFixed(2)),
-      totalPayable: Number(totalPayable.toFixed(2)),
-    };
+  /**
+   * Chuẩn bị các dòng hàng và toàn bộ số liệu tài chính của tờ khai.
+   *
+   * Thuế được suy ra từ chính hàng hoá (mã HS + xuất xứ từng dòng) chứ không còn
+   * là một con số 10% cố định, và phí vận chuyển bám theo tổng trọng lượng - xem
+   * financial-rules.ts. Gom vào một chỗ để đường tạo mới và đường sửa không bao
+   * giờ tính ra hai kết quả khác nhau.
+   */
+  private buildFinancials(dto: CreateCustomsDto) {
+    const importerCountry = (dto.importerCountry || 'VN').toUpperCase();
+    const exporterCountry = (dto.exporterCountry || 'VN').toUpperCase();
+
+    const materials = dto.materials.map((material, index) => {
+      const hsCode = normalizeHsCode(material.hsCode) || null;
+      const origin = material.origin ? material.origin.toUpperCase() : null;
+      const tax = calcMaterialTax({ ...material, hsCode, origin }, importerCountry);
+      return {
+        itemNo: material.itemNo ?? index + 1,
+        hsCode,
+        description: material.description,
+        quantity: Number(material.quantity) || 0,
+        unit: material.unit,
+        unitPrice: Number(material.unitPrice) || 0,
+        totalPrice: tax.totalPrice,
+        origin,
+        weight: material.weight ?? null,
+      };
+    });
+
+    const totals = calcDeclarationTotals(
+      dto.materials.map((material) => ({
+        hsCode: normalizeHsCode(material.hsCode) || null,
+        quantity: Number(material.quantity) || 0,
+        unitPrice: Number(material.unitPrice) || 0,
+        origin: material.origin ? material.origin.toUpperCase() : null,
+        weight: material.weight ?? null,
+      })),
+      {
+        exporterCountry,
+        importerCountry,
+        transportType: dto.transportType,
+        distanceKm: dto.distanceKm,
+        vatRateOverride: dto.vatRate,
+      },
+    );
+
+    return { materials, totals, exporterCountry, importerCountry };
   }
 
   private async generateRecordNo(date: Date) {
@@ -65,45 +118,26 @@ export class CustomsService {
     }
     const {
       recordNo: _ignoredRecordNo,
-      materials,
+      materials: _ignoredMaterials,
       journeys,
       currency = 'USD',
-      exporterCountry = 'VN',
-      importerCountry = 'VN',
-      distanceKm = 0,
+      exporterCountry: _ignoredExporterCountry,
+      importerCountry: _ignoredImporterCountry,
+      distanceKm: _ignoredDistanceKm,
       exchangeRate = DEFAULT_EXCHANGE_RATE,
+      vatRate: _ignoredVatRate,
+      shippingFee: _ignoredShippingFee,
       leg1Origin,
       leg1Destination,
       leg2Origin,
       leg2Destination,
       ...rest
     } = dto;
-    const vatRate = dto.vatRate ?? getVatRateByCountry(importerCountry);
-    const shippingFee = calculateShippingFee(distanceKm, exporterCountry, importerCountry);
 
-    const materialsWithTotal = materials.map((m) => ({
-      ...m,
-      totalPrice: Number((m.quantity * m.unitPrice).toFixed(2)),
-    }));
+    const { materials, totals, exporterCountry, importerCountry } = this.buildFinancials(dto);
+    const legData = this.buildLegData(journeys, { leg1Origin, leg1Destination, leg2Origin, leg2Destination });
 
-    const { totalValue, vatAmount, totalPayable } = this.calcFinancials(materialsWithTotal, vatRate, shippingFee);
-
-    // If journeys are provided, use them; otherwise use leg1Origin/leg1Destination
-    const legData = journeys && journeys.length > 0
-      ? {
-          leg1Origin: journeys[0]?.origin || '',
-          leg1Destination: journeys[0]?.destination || '',
-          leg2Origin: journeys[1]?.origin || undefined,
-          leg2Destination: journeys[1]?.destination || undefined,
-        }
-      : {
-          leg1Origin: leg1Origin || '',
-          leg1Destination: leg1Destination || '',
-          leg2Origin,
-          leg2Destination,
-        };
-
-    return this.prisma.customsRecord.create({
+    const record = await this.prisma.customsRecord.create({
       data: {
         recordNo,
         ...rest,
@@ -111,18 +145,13 @@ export class CustomsService {
         entryDate: new Date(dto.entryDate),
         exitDate: dto.exitDate ? new Date(dto.exitDate) : undefined,
         currency,
-        exporterCountry: exporterCountry.toUpperCase(),
-        importerCountry: importerCountry.toUpperCase(),
-        vatRate,
-        shippingFee,
-        distanceKm,
+        exporterCountry,
+        importerCountry,
+        ...this.toFinancialColumns(totals),
         exchangeRate,
-        totalValue,
-        vatAmount,
-        totalPayable,
         createdById: user.sub,
         companyId: user.companyId ?? undefined,
-        materials: { create: materialsWithTotal },
+        materials: { create: materials },
         ...(journeys && journeys.length > 0 && { journeys: { create: journeys } }),
         // Mốc đầu tiên của nhật ký: không có bản ghi này thì dòng thời gian sẽ
         // bắt đầu lửng lơ ở lần đổi trạng thái thứ hai.
@@ -136,6 +165,132 @@ export class CustomsService {
         createdBy: { select: { fullName: true, email: true } },
       },
     });
+
+    await this.hsCodes.rememberFromMaterials(materials, user.sub);
+    return record;
+  }
+
+  /** Cột leg1/leg2 là bản sao phẳng của hai chặng đầu, giữ cho tương thích ngược. */
+  private buildLegData(
+    journeys: CreateCustomsDto['journeys'],
+    fallback: { leg1Origin?: string; leg1Destination?: string; leg2Origin?: string; leg2Destination?: string },
+  ) {
+    if (journeys && journeys.length > 0) {
+      return {
+        leg1Origin: journeys[0]?.origin || '',
+        leg1Destination: journeys[0]?.destination || '',
+        leg2Origin: journeys[1]?.origin ?? null,
+        leg2Destination: journeys[1]?.destination ?? null,
+      };
+    }
+    return {
+      leg1Origin: fallback.leg1Origin || '',
+      leg1Destination: fallback.leg1Destination || '',
+      leg2Origin: fallback.leg2Origin ?? null,
+      leg2Destination: fallback.leg2Destination ?? null,
+    };
+  }
+
+  /** Ánh xạ kết quả tính thuế sang đúng các cột của bảng tờ khai. */
+  private toFinancialColumns(totals: ReturnType<typeof calcDeclarationTotals>) {
+    return {
+      vatRate: totals.vatRate,
+      vatAmount: totals.vatAmount,
+      importDutyRate: totals.importDutyRate,
+      importDutyAmount: totals.importDutyAmount,
+      shippingFee: totals.shippingFee,
+      totalValue: totals.totalValue,
+      totalWeight: totals.totalWeight,
+      distanceKm: totals.distanceKm,
+      totalPayable: totals.totalPayable,
+    };
+  }
+
+  /**
+   * Sửa nội dung một tờ khai đã lưu.
+   *
+   * Trước đây chỉ có API đổi trạng thái, nên một tờ khai gõ sai địa chỉ hay sai
+   * đơn giá là không còn cách nào sửa ngoài xoá đi khai lại - kể cả khi nó vẫn
+   * đang ở trạng thái nháp. Ở đây nội dung sửa được ở mọi trạng thái, nhưng hồ sơ
+   * đã mang hiệu lực quyết định (Đã duyệt / Hoàn thành) thì chỉ cấp quản lý được
+   * sửa, và mọi lần sửa đều để lại dấu vết trong nhật ký.
+   */
+  async update(id: string, dto: CreateCustomsDto, user: AuthUser) {
+    const existing = await this.prisma.customsRecord.findFirst({
+      where: { id, ...this.toRecordScope(user) },
+      select: { id: true, status: true, recordNo: true },
+    });
+    if (!existing) throw new NotFoundException('Không tìm thấy tờ khai');
+
+    if (LOCKED_FOR_STAFF.includes(existing.status as CustomsStatus) && !MANAGER_ROLES.includes(user.role)) {
+      throw new ForbiddenException(
+        `Tờ khai đang ở trạng thái "${STATUS_LABELS[existing.status as CustomsStatus]}", chỉ Giám đốc hoặc Trưởng phòng được sửa nội dung.`,
+      );
+    }
+
+    const nextRecordNo = (dto as any).recordNo?.trim() || existing.recordNo;
+    if (nextRecordNo !== existing.recordNo) {
+      const taken = await this.prisma.customsRecord.findUnique({ where: { recordNo: nextRecordNo }, select: { id: true } });
+      if (taken) throw new ConflictException(`Số tờ khai "${nextRecordNo}" đã tồn tại, vui lòng nhập số khác`);
+    }
+
+    const {
+      recordNo: _ignoredRecordNo,
+      materials: _ignoredMaterials,
+      journeys,
+      currency = 'USD',
+      exporterCountry: _ignoredExporterCountry,
+      importerCountry: _ignoredImporterCountry,
+      distanceKm: _ignoredDistanceKm,
+      exchangeRate = DEFAULT_EXCHANGE_RATE,
+      vatRate: _ignoredVatRate,
+      shippingFee: _ignoredShippingFee,
+      leg1Origin,
+      leg1Destination,
+      leg2Origin,
+      leg2Destination,
+      ...rest
+    } = dto;
+
+    const { materials, totals, exporterCountry, importerCountry } = this.buildFinancials(dto);
+    const legData = this.buildLegData(journeys, { leg1Origin, leg1Destination, leg2Origin, leg2Destination });
+
+    // Vật tư và hành trình được thay trọn bộ thay vì so từng dòng: bảng chỉ có ý
+    // nghĩa như một khối, và ghép từng dòng sẽ để lại những dòng cũ mà người dùng
+    // đã xoá trên giao diện.
+    await this.prisma.$transaction([
+      this.prisma.material.deleteMany({ where: { customsRecordId: id } }),
+      this.prisma.journey.deleteMany({ where: { customsRecordId: id } }),
+      this.prisma.customsRecord.update({
+        where: { id },
+        data: {
+          recordNo: nextRecordNo,
+          ...rest,
+          ...legData,
+          entryDate: new Date(dto.entryDate),
+          exitDate: dto.exitDate ? new Date(dto.exitDate) : null,
+          currency,
+          exporterCountry,
+          importerCountry,
+          ...this.toFinancialColumns(totals),
+          exchangeRate,
+          materials: { create: materials },
+          ...(journeys && journeys.length > 0 && { journeys: { create: journeys } }),
+        },
+      }),
+      this.prisma.customsStatusHistory.create({
+        data: {
+          customsRecordId: id,
+          fromStatus: existing.status as any,
+          toStatus: existing.status as any,
+          note: 'Cập nhật nội dung tờ khai',
+          changedById: user.sub,
+        },
+      }),
+    ]);
+
+    await this.hsCodes.rememberFromMaterials(materials, user.sub);
+    return this.findOne(id, user);
   }
 
   async findAll(
@@ -225,8 +380,12 @@ export class CustomsService {
       );
     }
 
-    if (!canRoleSet(user.role, status)) {
-      throw new ForbiddenException(`Vai trò của bạn không được phép chuyển tờ khai sang "${STATUS_LABELS[status]}"`);
+    if (!canRoleSet(user.role, status, from)) {
+      throw new ForbiddenException(
+        isBackwardTransition(from, status)
+          ? `Chỉ Giám đốc hoặc Trưởng phòng được đưa tờ khai từ "${STATUS_LABELS[from]}" về "${STATUS_LABELS[status]}"`
+          : `Vai trò của bạn không được phép chuyển tờ khai sang "${STATUS_LABELS[status]}"`,
+      );
     }
 
     // Ghi nhật ký cùng transaction với việc đổi trạng thái, để không xảy ra tình

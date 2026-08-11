@@ -12,6 +12,9 @@ import type { Task, TaskStatus, User } from '@/types';
 
 const todayValue = new Date().toISOString().slice(0, 10);
 
+/** Khoảng thời gian của danh sách nhiệm vụ. */
+type TaskRange = 'TODAY' | 'PICKED' | 'ALL';
+
 export default function TasksPage() {
   const { data: session } = useSession();
   const role = (session?.user as any)?.role as string | undefined;
@@ -27,7 +30,15 @@ export default function TasksPage() {
   // Bộ lọc danh sách (dành cho Giám đốc/Quản lý)
   const [filterAssignee, setFilterAssignee] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
-  const [allDates, setAllDates] = useState(true);
+  /**
+   * Khoảng thời gian của danh sách nhiệm vụ.
+   *
+   * Trước đây chỗ này là một ô tích ghi "Chỉ ngày 2026-08-10" - ngày đó chỉ là giá
+   * trị đang có trong ô chọn ngày phía trên (ô vốn dùng để đặt ngày cho nhiệm vụ
+   * mới), nên nhãn hiện ra một ngày ngẫu nhiên không nói lên điều gì. Ba lựa chọn
+   * dưới đây nói thẳng ra khoảng thời gian đang xem.
+   */
+  const [range, setRange] = useState<TaskRange>('ALL');
 
   const { data: users = [] } = useQuery<User[]>({
     queryKey: ['task-users'],
@@ -35,8 +46,10 @@ export default function TasksPage() {
     enabled: canAssignTasks,
   });
 
+  const rangeDate = range === 'TODAY' ? todayValue : range === 'PICKED' ? selectedDate : undefined;
+
   const { data: tasks = [], isLoading } = useTasksList({
-    date: allDates ? undefined : selectedDate,
+    date: rangeDate,
     assignedToId: canAssignTasks && filterAssignee ? filterAssignee : undefined,
     status: filterStatus || undefined,
   });
@@ -121,12 +134,19 @@ export default function TasksPage() {
           </div>
 
           <div className="space-y-4">
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(event) => setSelectedDate(event.target.value)}
-              className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-            />
+            {/* Ô này quyết định ngày làm việc của nhiệm vụ sắp tạo. Không ghi rõ thì
+                người dùng tưởng nó là bộ lọc danh sách. */}
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-gray-700">
+                {isVietnamese ? 'Ngày làm việc của nhiệm vụ' : 'Work date for the new task'}
+              </span>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(event) => setSelectedDate(event.target.value)}
+                className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
 
             {canAssignTasks && (
               <select
@@ -200,10 +220,17 @@ export default function TasksPage() {
                   <option value="IN_PROGRESS">{statusLabel('IN_PROGRESS')}</option>
                   <option value="DONE">{statusLabel('DONE')}</option>
                 </select>
-                <label className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700">
-                  <input type="checkbox" checked={!allDates} onChange={(e) => setAllDates(!e.target.checked)} />
-                  {isVietnamese ? `Chỉ ngày ${selectedDate}` : `Only ${selectedDate}`}
-                </label>
+                <select
+                  value={range}
+                  onChange={(event) => setRange(event.target.value as TaskRange)}
+                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                >
+                  <option value="ALL">{isVietnamese ? 'Tất cả các ngày' : 'All dates'}</option>
+                  <option value="TODAY">{isVietnamese ? 'Chỉ hôm nay' : 'Today only'}</option>
+                  <option value="PICKED">
+                    {isVietnamese ? `Theo ngày đã chọn (${selectedDate})` : `Selected date (${selectedDate})`}
+                  </option>
+                </select>
               </div>
             </div>
           )}
@@ -212,7 +239,13 @@ export default function TasksPage() {
             <p className="text-sm text-gray-500">{isVietnamese ? 'Đang tải nhiệm vụ...' : 'Loading tasks...'}</p>
           ) : tasks.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-12 text-center text-sm text-gray-500">
-              {isVietnamese ? 'Chưa có nhiệm vụ nào cho ngày này.' : 'No tasks scheduled for this date.'}
+              {range === 'ALL'
+                ? isVietnamese
+                  ? 'Chưa có nhiệm vụ nào khớp với bộ lọc hiện tại.'
+                  : 'No tasks match the current filters.'
+                : isVietnamese
+                  ? `Chưa có nhiệm vụ nào cho ngày ${rangeDate}.`
+                  : `No tasks scheduled for ${rangeDate}.`}
             </div>
           ) : (
             <div className="space-y-4">

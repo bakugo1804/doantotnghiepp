@@ -11,6 +11,7 @@ import { TasksModule } from './tasks/tasks.module';
 import { SearchModule } from './search/search.module';
 import { CompaniesModule } from './companies/companies.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { HsCodesModule } from './hs-codes/hs-codes.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SearchModule,
     CompaniesModule,
     NotificationsModule,
+    HsCodesModule,
   ],
 })
 export class AppModule {}

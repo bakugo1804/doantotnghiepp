@@ -14,9 +14,11 @@ import {
 import { customsApi, reportsApi, downloadBlob } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import { useCustomsList } from '@/hooks/useCustoms';
-import { formatDate, formatCurrency, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { formatDate, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { convertMoney, formatMoneyIn } from '@/lib/money';
 import { compactCurrency, formatMonthKey, STATUS_COLOR_VAR, STATUS_ORDER } from '@/lib/viz';
 import { useLocale } from '@/components/settings/LocaleProvider';
+import { CurrencyToggle, Money, useDisplayCurrency } from '@/components/settings/CurrencyProvider';
 import { ChartCard, VizTable } from '@/components/charts/ChartCard';
 import { TrendChart } from '@/components/charts/TrendChart';
 import { StackedBar } from '@/components/charts/StackedBar';
@@ -29,6 +31,7 @@ export default function ReportsPage() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const { locale } = useLocale();
+  const { display } = useDisplayCurrency();
   const vi = locale === 'vi';
   const intlLocale = vi ? 'vi-VN' : 'en-US';
 
@@ -188,7 +191,10 @@ export default function ReportsPage() {
     );
   }, [records, search]);
 
-  const money = (value: number) => compactCurrency(value, 'USD', intlLocale);
+  // Backend đã quy hết số liệu tổng hợp về USD (xem CustomsService.getStats), nên
+  // ở đây chỉ cần đổi tiếp sang đồng tiền người dùng đang chọn xem.
+  const money = (value: number) => compactCurrency(convertMoney(value, 'USD', display), display, intlLocale);
+  const moneyFull = (value: number) => formatMoneyIn(value, 'USD', display);
 
   return (
     <div className="space-y-6">
@@ -259,7 +265,7 @@ export default function ReportsPage() {
               head={[copy.month, copy.valueCol]}
               rows={trend.map((point: any) => [
                 formatMonthKey(point.month, locale),
-                formatCurrency(point.value, 'USD'),
+                moneyFull(point.value),
               ])}
             />
           }
@@ -302,7 +308,7 @@ export default function ReportsPage() {
         table={
           <VizTable
             head={[copy.companyCol, copy.valueCol]}
-            rows={companyRows.map((row: any) => [row.label, formatCurrency(row.value, 'USD')])}
+            rows={companyRows.map((row: any) => [row.label, moneyFull(row.value)])}
           />
         }
       >
@@ -320,14 +326,17 @@ export default function ReportsPage() {
             <h2 className="text-base font-semibold text-slate-900">{copy.exportTitle}</h2>
             <p className="text-sm text-slate-500">{copy.exportSubtitle}</p>
           </div>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder={copy.searchPlaceholder}
-              className="w-full min-w-[260px] rounded-lg border border-slate-200 py-2 pl-9 pr-3 text-sm transition focus:border-blue-500 focus:outline-none"
-            />
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={copy.searchPlaceholder}
+                className="w-full min-w-[260px] rounded-lg border border-slate-200 py-2 pl-9 pr-3 text-sm transition focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <CurrencyToggle />
           </div>
         </div>
 
@@ -374,7 +383,7 @@ export default function ReportsPage() {
                       </td>
                       <td className="px-4 py-3 text-slate-700">{record.exporterName}</td>
                       <td className="px-4 py-3 text-right font-medium tabular-nums">
-                        {formatCurrency(record.totalPayable, record.currency)}
+                        <Money value={record.totalPayable} currency={record.currency} rate={record.exchangeRate} />
                       </td>
                       <td className="px-4 py-3">
                         <span className={`rounded-full px-2 py-1 text-xs font-medium ${status?.color ?? ''}`}>

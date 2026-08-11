@@ -2,10 +2,11 @@
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { customsApi, reportsApi, downloadBlob } from '@/lib/api';
-import { formatDate, formatCurrency } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
 import { useMessages } from '@/hooks/useMessages';
 import { useStatusLabels, useTransportLabels } from '@/hooks/useCustomsLabels';
-import { Eye, Search, FileSpreadsheet, FileText } from 'lucide-react';
+import { CurrencyToggle, Money } from '@/components/settings/CurrencyProvider';
+import { Eye, Search, FileSpreadsheet, FileText, Pencil } from 'lucide-react';
 import Link from 'next/link';
 
 export function CustomsTable() {
@@ -39,8 +40,8 @@ export function CustomsTable() {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200">
       {/* Search */}
-      <div className="p-4 border-b border-gray-200">
-        <div className="relative max-w-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 p-4">
+        <div className="relative max-w-sm flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
           <input
             value={search}
@@ -48,6 +49,10 @@ export function CustomsTable() {
             placeholder={msg.customs.table.search}
             className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          Xem tiền theo
+          <CurrencyToggle />
         </div>
       </div>
 
@@ -59,6 +64,9 @@ export function CustomsTable() {
               {[
                 msg.customs.table.headers.recordNo,
                 msg.customs.table.headers.entryDate,
+                // Ngày xuất khẩu vốn có trên tờ khai nhưng bảng chỉ hiện ngày nhập,
+                // nên không thể biết lô nào đã đi khỏi Việt Nam mà không mở từng hồ sơ.
+                'Ngày xuất khẩu',
                 msg.customs.table.headers.transport,
                 msg.customs.table.headers.exporter,
                 msg.customs.table.headers.importer,
@@ -72,18 +80,21 @@ export function CustomsTable() {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={8} className="text-center py-12 text-gray-400">{msg.customs.table.loading}</td></tr>
+              <tr><td colSpan={9} className="text-center py-12 text-gray-400">{msg.customs.table.loading}</td></tr>
             ) : data?.data?.length === 0 ? (
-              <tr><td colSpan={8} className="text-center py-12 text-gray-400">{msg.customs.table.empty}</td></tr>
+              <tr><td colSpan={9} className="text-center py-12 text-gray-400">{msg.customs.table.empty}</td></tr>
             ) : (
               data?.data?.map((record: any) => (
                 <tr key={record.id} className="border-b border-gray-100 hover:bg-gray-50 transition">
                   <td className="px-4 py-3 font-medium text-blue-600">{record.recordNo}</td>
                   <td className="px-4 py-3 text-gray-600">{formatDate(record.entryDate)}</td>
+                  <td className="px-4 py-3 text-gray-600">{record.exitDate ? formatDate(record.exitDate) : '—'}</td>
                   <td className="px-4 py-3">{(transportLabels as Record<string, string>)[record.transportType]}</td>
                   <td className="px-4 py-3 text-gray-700">{record.exporterName}</td>
                   <td className="px-4 py-3 text-gray-700">{record.importerName}</td>
-                  <td className="px-4 py-3 font-medium">{formatCurrency(record.totalPayable, record.currency)}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <Money value={record.totalPayable} currency={record.currency} rate={record.exchangeRate} />
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${(statusLabels as Record<string, { label: string; color: string }>)[record.status]?.color}`}>
                       {(statusLabels as Record<string, { label: string; color: string }>)[record.status]?.label}
@@ -93,6 +104,9 @@ export function CustomsTable() {
                     <div className="flex gap-2">
                       <Link href={`/dashboard/customs/${record.id}`} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded" title={msg.customs.table.actions.view}>
                         <Eye className="h-4 w-4" />
+                      </Link>
+                      <Link href={`/dashboard/customs/${record.id}/edit`} className="rounded p-1.5 text-amber-600 hover:bg-amber-50" title="Sửa tờ khai">
+                        <Pencil className="h-4 w-4" />
                       </Link>
                       <button onClick={() => handleExport(record.id, record.recordNo)} className="p-1.5 text-green-500 hover:bg-green-50 rounded" title="Tải Excel">
                         <FileSpreadsheet className="h-4 w-4" />

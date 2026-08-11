@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SessionProvider } from 'next-auth/react';
 import { useState } from 'react';
 import { AppPreferencesProvider } from '@/components/settings/AppPreferencesProvider';
+import { CurrencyProvider } from '@/components/settings/CurrencyProvider';
 import { LocaleProvider } from '@/components/settings/LocaleProvider';
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -14,7 +15,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <SessionProvider>
       <QueryClientProvider client={queryClient}>
         <AppPreferencesProvider>
-          <LocaleProvider>{children}</LocaleProvider>
+          <LocaleProvider>
+            <CurrencyProvider>{children}</CurrencyProvider>
+          </LocaleProvider>
         </AppPreferencesProvider>
       </QueryClientProvider>
     </SessionProvider>

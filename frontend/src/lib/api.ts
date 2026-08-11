@@ -40,6 +40,7 @@ export const customsApi = {
   getCompanies: (search?: string) => apiClient.get('/customs/companies', { params: { search } }),
   checkRecordNo: (recordNo: string) => apiClient.get('/customs/check-record-no', { params: { recordNo } }),
   create: (data: any) => apiClient.post('/customs', data),
+  update: (id: string, data: any) => apiClient.patch(`/customs/${id}`, data),
   getTransitions: (id: string) => apiClient.get(`/customs/${id}/transitions`),
   updateStatus: (id: string, status: string, note?: string) =>
     apiClient.patch(`/customs/${id}/status`, { status, note }),
@@ -47,11 +48,23 @@ export const customsApi = {
 };
 
 // ===== Danh bạ công ty =====
+//
+// Công ty "suy ra" từ tờ khai có id dạng `derived-<tên công ty>`, mà tên công ty
+// chứa dấu cách và dấu tiếng Việt. Không mã hoá thì đoạn đường dẫn bị cắt sai và
+// máy chủ nhận được một cái tên khác.
 export const companiesApi = {
   getAll: (params?: any) => apiClient.get('/companies', { params }),
   create: (data: any) => apiClient.post('/companies', data),
-  update: (id: string, data: any) => apiClient.patch(`/companies/${id}`, data),
-  delete: (id: string) => apiClient.delete(`/companies/${id}`),
+  update: (id: string, data: any) => apiClient.patch(`/companies/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete(`/companies/${encodeURIComponent(id)}`),
+};
+
+// ===== Danh mục mã HS =====
+export const hsCodesApi = {
+  getAll: (params?: { search?: string }) => apiClient.get('/hs-codes', { params }),
+  create: (data: any) => apiClient.post('/hs-codes', data),
+  update: (id: string, data: any) => apiClient.patch(`/hs-codes/${id}`, data),
+  delete: (id: string) => apiClient.delete(`/hs-codes/${id}`),
 };
 
 // ===== Người dùng =====

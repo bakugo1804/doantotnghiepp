@@ -16,6 +16,7 @@ import {
   normalizeTransport,
 } from '../common/customs-form';
 import { normalizeCountryCode } from '../common/countries';
+import { normalizeHsCode } from '../hs-codes/hs-codes.service';
 
 // pdf-parse (thuần JS) — trích xuất text từ PDF có lớp text
 const pdfParse = require('pdf-parse');
@@ -44,6 +45,12 @@ type ParsedMaterial = {
   origin?: string;
   weight?: number;
 };
+
+/** Một ô chữ trên bản PDF, kèm toạ độ ngang để nhận ra ô nào thuộc cột nào. */
+type PdfCell = { x: number; text: string };
+
+/** Sai số ngang (pt) khi ghép một dòng bị ngắt vào đúng ô của dòng phía trên. */
+const CONTINUATION_X_TOLERANCE = 6;
 
 type ParsedJourney = {
   legNumber: number;
@@ -310,7 +317,10 @@ export class AiService {
             };
             materials.push({
               itemNo: this.toNumber(get('itemNo')) || materials.length + 1,
-              hsCode: this.cellText(get('hsCode')) || undefined,
+              // Chuẩn hoá ngay khi đọc: "847130" và "8471.30" phải trỏ về cùng một
+              // mã trong danh mục, nếu không bảng tra thuế theo chương đọc sai và
+              // danh mục mã HS sinh ra hai bản ghi cho cùng một mặt hàng.
+              hsCode: normalizeHsCode(get('hsCode')) || undefined,
               description: desc,
               quantity: this.toNumber(get('quantity')),
               unit: this.cellText(get('unit')) || 'cái',
@@ -343,52 +353,67 @@ export class AiService {
   // ==================== ĐỌC PDF (theo nhãn, best-effort) ====================
 
   /**
-   * Dựng lại text của PDF, giữ ranh giới giữa các ô trong bảng.
+   * Dựng lại nội dung PDF thành lưới ô, giữ ranh giới giữa các cột.
    *
    * Text mặc định của pdf-parse nối thẳng các ô liền nhau ("18471.30Máy tính
    * xách tay10cái850") vì trong PDF không có khái niệm "cột" - chỉ có các mẩu
-   * chữ đặt tại toạ độ. Ở đây gom các mẩu chữ theo dòng (toạ độ y) rồi chèn TAB
-   * vào chỗ có khoảng trống ngang, nhờ vậy bảng mới tách được thành các cột.
+   * chữ đặt tại toạ độ. Ở đây gom các mẩu chữ theo dòng (toạ độ y) rồi cắt thành
+   * ô ở những chỗ có khoảng trống ngang. Toạ độ x của từng ô được giữ lại vì đó
+   * là căn cứ duy nhất để biết một dòng không có nhãn là phần ngắt dòng của ô nào.
    */
-  private async pdfLines(buffer: Buffer): Promise<string[]> {
+  private async pdfRows(buffer: Buffer): Promise<PdfCell[][]> {
     /** Khoảng hở ngang (pt) đủ lớn để coi là ranh giới giữa hai ô. */
     const COLUMN_GAP = 3;
     /** Sai số dọc (pt) khi gom các mẩu chữ về cùng một dòng. */
     const ROW_TOLERANCE = 2;
 
-    const rows: { y: number; items: { x: number; width: number; str: string }[] }[] = [];
+    const rows: { page: number; y: number; items: { x: number; width: number; str: string }[] }[] = [];
 
-    const renderPage = (pageData: any) =>
-      pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false }).then((content: any) => {
+    // Toạ độ y được đánh lại từ đầu ở mỗi trang, nên phải gom theo TỪNG TRANG.
+    // Gộp chung cả tài liệu thì dòng cuối trang 1 và dòng cuối trang 2 có cùng y sẽ
+    // bị nhập vào một dòng, cho ra những chuỗi lặp đôi kiểu "Trang Trang 1/22/2" -
+    // và với tờ khai dài hơn một trang thì cả bảng vật tư bị trộn lẫn.
+    let pageIndex = 0;
+
+    const renderPage = (pageData: any) => {
+      const page = pageIndex++;
+      return pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false }).then((content: any) => {
         for (const item of content.items) {
           if (!item.str) continue;
           const x = item.transform[4];
           const y = item.transform[5];
-          const row = rows.find((r) => Math.abs(r.y - y) <= ROW_TOLERANCE);
+          const row = rows.find((r) => r.page === page && Math.abs(r.y - y) <= ROW_TOLERANCE);
           if (row) row.items.push({ x, width: item.width || 0, str: item.str });
-          else rows.push({ y, items: [{ x, width: item.width || 0, str: item.str }] });
+          else rows.push({ page, y, items: [{ x, width: item.width || 0, str: item.str }] });
         }
         return '';
       });
+    };
 
     await pdfParse(buffer, { pagerender: renderPage });
 
-    // PDF đánh y từ dưới lên, nên phải đảo lại mới ra thứ tự đọc của con người.
-    rows.sort((a, b) => b.y - a.y);
+    // Trang trước lên trước; trong mỗi trang, PDF đánh y từ dưới lên nên phải đảo
+    // lại mới ra thứ tự đọc của con người.
+    rows.sort((a, b) => a.page - b.page || b.y - a.y);
 
     return rows
       .map((row) => {
         row.items.sort((a, b) => a.x - b.x);
-        let line = '';
+        const cells: PdfCell[] = [];
         let cursor = -Infinity;
         for (const item of row.items) {
-          if (line && item.x - cursor > COLUMN_GAP) line += '\t';
-          line += item.str;
+          if (cells.length === 0 || item.x - cursor > COLUMN_GAP) cells.push({ x: item.x, text: item.str });
+          else cells[cells.length - 1].text += item.str;
           cursor = item.x + item.width;
         }
-        return line.trim();
+        return cells.map((cell) => ({ x: cell.x, text: cell.text.trim() })).filter((cell) => cell.text.length > 0);
       })
-      .filter((line) => line.length > 0);
+      .filter((cells) => cells.length > 0);
+  }
+
+  /** Bản text thuần của từng dòng, dùng cho phần dò bảng theo biểu thức chính quy. */
+  private rowsToLines(rows: PdfCell[][]): string[] {
+    return rows.map((cells) => cells.map((cell) => cell.text).join('\t'));
   }
 
   /**
@@ -406,81 +431,225 @@ export class AiService {
   }
 
   async parsePdf(buffer: Buffer): Promise<ParsedForm> {
-    const lines = await this.pdfLines(buffer);
+    const rows = await this.pdfRows(buffer);
+    const lines = this.rowsToLines(rows);
 
     const fields: Partial<Record<CustomsFieldKey, string>> = {};
+
+    // Phần trường chỉ nằm phía trên các bảng. Dừng lại ở dòng tiêu đề bảng đầu
+    // tiên để cột "Mô tả hàng hoá" không bị hiểu thành phần nối tiếp của một ô
+    // giá trị trùng toạ độ ngang.
+    const isTableHeader = (cells: PdfCell[]) =>
+      cells.filter((cell) => matchMaterialColumn(cell.text) || matchJourneyColumn(cell.text)).length >= 2;
+    const tablesStart = rows.findIndex(isTableHeader);
+    const fieldRows = tablesStart >= 0 ? rows.slice(0, tablesStart) : rows;
+
+    /**
+     * Ô giá trị gần nhất tại mỗi vị trí ngang, để nối lại phần bị ngắt dòng.
+     *
+     * Tên công ty dài hơn bề rộng ô sẽ được PDF ngắt xuống dòng dưới, mà dòng đó
+     * không còn nhãn nào đi kèm. Nếu chỉ đọc dòng có nhãn thì "Công ty TNHH
+     * Thương mại ABC Việt Nam" bị cắt cụt thành "Công ty TNHH Thương mại ABC".
+     */
+    const anchors = new Map<number, CustomsFieldKey>();
+    /** Sai số ngang (pt) khi coi hai ô là cùng một cột. */
+    const X_TOLERANCE = 4;
+    const anchorAt = (x: number) => [...anchors.keys()].find((ax) => Math.abs(ax - x) <= X_TOLERANCE);
 
     // Khối "Bên xuất khẩu" và "Bên nhập khẩu" nằm cạnh nhau trên bản PDF, nên
     // một dòng có thể chứa hai cặp nhãn - giá trị. Vì vậy phải duyệt theo từng
     // mẩu chữ trong dòng, không thể lấy toàn bộ phần đuôi làm giá trị.
-    for (const line of lines) {
-      const tokens = line.split('\t').map((t) => t.trim()).filter(Boolean);
-      for (let i = 0; i < tokens.length; i++) {
-        let key = matchField(tokens[i]);
+    for (const cells of fieldRows) {
+      const assigned = new Set<number>();
+
+      for (let i = 0; i < cells.length; i++) {
+        const cell = cells[i];
+        let key = matchField(cell.text);
         let value = '';
+        let valueX = cell.x;
 
         if (key) {
-          const next = tokens[i + 1];
-          if (next && !matchField(next)) {
-            value = next;
+          const next = cells[i + 1];
+          if (next && !matchField(next.text)) {
+            value = next.text;
+            valueX = next.x;
             i++;
           }
         } else {
-          const pair = this.splitLabelValue(tokens[i]);
+          const pair = this.splitLabelValue(cell.text);
           if (pair) ({ key, value } = pair);
         }
 
-        if (key && value && fields[key] == null && !isPlaceholderText(value)) fields[key] = value;
+        if (key) {
+          if (value && fields[key] == null && !isPlaceholderText(value)) fields[key] = value;
+          // Dù giá trị rỗng vẫn phải neo: ô trống trên bản mẫu cũng có thể được
+          // điền bằng nhiều dòng ở các dòng tiếp theo.
+          const existing = anchorAt(valueX);
+          anchors.set(existing ?? valueX, key);
+          assigned.add(existing ?? valueX);
+          continue;
+        }
+
+        // Không phải nhãn, cũng không phải giá trị vừa gán -> phần ngắt dòng của
+        // ô phía trên cùng cột.
+        const ax = anchorAt(cell.x);
+        if (ax == null || assigned.has(ax)) continue;
+        const owner = anchors.get(ax)!;
+        if (fields[owner] && !isPlaceholderText(cell.text)) fields[owner] += ` ${cell.text}`;
       }
     }
 
-    // Hành trình (best-effort): dòng sau header 'Chặng ... Điểm đi ... Điểm đến'
-    const journeys: ParsedJourney[] = [];
-    const jHeader = lines.findIndex((l) => /(chặng|chang)/i.test(l) && /(điểm đi|diem di)/i.test(l) && /(điểm đến|diem den)/i.test(l));
-    if (jHeader >= 0) {
-      for (let i = jHeader + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (/(mô tả|mo ta|hàng hóa|tổng|người khai)/i.test(line)) break;
-        const cols = line.split(/\s{2,}|\t/).map((c) => c.trim()).filter(Boolean);
-        if (cols.length < 3) continue;
-        const [leg, transport, origin, destination] = cols.length >= 4 ? cols : [String(journeys.length + 1), ...cols];
-        if (!origin || !destination) continue;
-        journeys.push({
-          legNumber: this.toNumber(leg) || journeys.length + 1,
-          transportType: normalizeTransport(transport) || 'ROAD',
+    // Bảng hành trình và bảng vật tư: nhận diện dòng tiêu đề bằng cách khớp TỪNG Ô
+    // với danh mục cột, giống hệt đường đọc Excel.
+    //
+    // Cách cũ dò bằng biểu thức chính quy trên cả dòng (`/\bSTT\b/`), nên chỉ cần
+    // PDF ngắt nhãn "STT" thành "ST" + "T" ở dòng dưới là không tìm thấy tiêu đề và
+    // toàn bộ bảng vật tư bị bỏ trắng - đúng lỗi "vật tư chả in cái gì cả".
+    /** Khối tổng kết và khu vực chữ ký - mọi bảng đều kết thúc trước những dòng này. */
+    const isAfterTables = (cells: PdfCell[]) =>
+      /(tổng|tong)\s|người khai|nguoi khai|xác nhận|xac nhan|ký, ghi rõ/i.test(cells.map((c) => c.text).join(' '));
+
+    const journeys = this.readPdfTable(rows, {
+      match: matchJourneyColumn,
+      required: ['origin', 'destination'],
+      indexColumn: 'legNumber',
+      // Bảng vật tư nằm ngay dưới bảng hành trình và cũng có cột "STT", nên nếu
+      // không dừng ở đây thì các dòng hàng hoá bị đọc thành chặng vận chuyển.
+      stopAt: (cells) => isAfterTables(cells) || cells.filter((c) => matchMaterialColumn(c.text)).length >= 2,
+      build: (get, index) => {
+        const origin = get('origin');
+        const destination = get('destination');
+        if (!origin || !destination) return null;
+        return {
+          legNumber: this.toNumber(get('legNumber')) || index + 1,
+          transportType: normalizeTransport(get('transportType')) || 'ROAD',
           origin,
           destination,
-        });
-      }
-    }
+        } as ParsedJourney;
+      },
+    });
 
-    // Vật tư (best-effort)
-    const materials: ParsedMaterial[] = [];
-    const headerIdx = lines.findIndex((l) => /\bSTT\b/i.test(l) && /(mô tả|mo ta)/i.test(l));
-    if (headerIdx >= 0) {
-      for (let i = headerIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (/(tổng|tong)\s|người khai|xác nhận|customs declaration/i.test(line)) break;
-        const cols = line.split(/\s{2,}|\t/).map((c) => c.trim()).filter(Boolean);
-        if (cols.length < 3) continue;
-        const byIndex: Record<MaterialFieldKey, string | undefined> = {} as any;
-        MATERIAL_COLUMNS.forEach((c, idx) => (byIndex[c.key] = cols[idx]));
-        const desc = byIndex.description || cols[2];
-        if (!desc || /^[\d.,]+$/.test(desc)) continue;
-        materials.push({
-          itemNo: this.toNumber(byIndex.itemNo) || materials.length + 1,
-          hsCode: byIndex.hsCode || undefined,
-          description: desc,
-          quantity: this.toNumber(byIndex.quantity),
-          unit: byIndex.unit || 'cái',
-          unitPrice: this.toNumber(byIndex.unitPrice),
-          origin: normalizeCountryCode(byIndex.origin),
-          weight: this.toNumber(byIndex.weight) || undefined,
-        });
-      }
-    }
+    const materials = this.readPdfTable(rows, {
+      match: matchMaterialColumn,
+      required: ['description'],
+      indexColumn: 'itemNo',
+      stopAt: isAfterTables,
+      build: (get, index) => {
+        const description = get('description');
+        // Dòng tổng kết ("Tổng giá trị hàng: 13.900 USD") cũng có hai ô, nên phải
+        // loại những dòng mà cột mô tả chỉ chứa số.
+        if (!description || /^[\d.,\s]+$/.test(description)) return null;
+        return {
+          itemNo: this.toNumber(get('itemNo')) || index + 1,
+          hsCode: normalizeHsCode(get('hsCode')) || undefined,
+          description,
+          quantity: this.toNumber(get('quantity')),
+          unit: get('unit') || 'cái',
+          unitPrice: this.toNumber(get('unitPrice')),
+          origin: normalizeCountryCode(get('origin')),
+          weight: this.toNumber(get('weight')) || undefined,
+        } as ParsedMaterial;
+      },
+    });
 
     return this.assemble(fields, journeys, materials);
+  }
+
+  /**
+   * Đọc một bảng trong PDF: tìm dòng tiêu đề rồi lấy các dòng dữ liệu bên dưới.
+   *
+   * Dòng tiêu đề được nhận ra bằng cách khớp TỪNG Ô với danh mục cột (giống đường
+   * đọc Excel), rồi thứ tự các cột đọc được từ chính dòng tiêu đề đó dùng để gán ô
+   * dữ liệu ở các dòng dưới. Không thể gán theo toạ độ ngang: nhãn tiêu đề được
+   * canh giữa còn dữ liệu canh trái, nên hai mốc x lệch nhau cả chục điểm.
+   */
+  private readPdfTable<K extends string, T>(
+    rows: PdfCell[][],
+    options: {
+      match: (label: unknown) => K | undefined;
+      required: K[];
+      /** Cột số thứ tự - dùng để phân biệt dòng dữ liệu thật với dòng khác. */
+      indexColumn: K;
+      /** Dòng đánh dấu bảng đã kết thúc. */
+      stopAt: (cells: PdfCell[]) => boolean;
+      build: (get: (key: K) => string | undefined, index: number) => T | null;
+    },
+  ): T[] {
+    /** Một dòng được coi là tiêu đề khi có ít nhất hai ô khớp danh mục cột. */
+    const headerColumnsOf = (cells: PdfCell[]): K[] => {
+      const keys: K[] = [];
+      for (const cell of cells) {
+        const key = options.match(cell.text);
+        if (key && !keys.includes(key)) keys.push(key);
+      }
+      return keys;
+    };
+
+    for (let header = 0; header < rows.length; header++) {
+      const columns = headerColumnsOf(rows[header]);
+      if (columns.length < 2 || !options.required.every((key) => columns.includes(key))) continue;
+
+      const indexPosition = columns.indexOf(options.indexColumn);
+
+      // Gom dòng trước, dựng đối tượng sau: một dòng hàng hoá có thể trải trên nhiều
+      // dòng chữ (mô tả dài bị ngắt), nên phải ghép xong mới biết giá trị đầy đủ.
+      const collected: { values: (string | undefined)[]; anchors: PdfCell[] }[] = [];
+
+      for (let r = header + 1; r < rows.length; r++) {
+        const cells = rows[r];
+
+        const indexText = indexPosition >= 0 ? cells[indexPosition]?.text : undefined;
+        const isDataRow = indexPosition < 0 || /^\d+$/.test(String(indexText ?? '').trim());
+
+        if (isDataRow) {
+          collected.push({ values: columns.map((_, i) => cells[i]?.text), anchors: cells });
+          continue;
+        }
+
+        // Hết bảng thật sự: khối tổng kết hoặc khu vực chữ ký (với bảng hành trình
+        // thì thêm cả dòng tiêu đề của bảng vật tư ngay bên dưới).
+        if (options.stopAt(cells)) break;
+
+        // Tiêu đề được pdfmake lặp lại ở đầu mỗi trang: bỏ qua, đừng coi là hết bảng,
+        // nếu không tờ khai dài hơn một trang chỉ đọc được phần nằm ở trang đầu.
+        if (headerColumnsOf(cells).length >= 2) continue;
+
+        const previous = collected[collected.length - 1];
+        if (!previous) continue;
+
+        // Dòng không có số thứ tự và không phải tiêu đề: phần bị ngắt dòng của ô phía
+        // trên. Gán theo toạ độ ngang so với chính dòng dữ liệu trước đó (ô dữ liệu
+        // với ô dữ liệu thì mới cùng cách canh lề).
+        //
+        // Không khớp toạ độ nào thì đây là dòng trang trí - chân trang, số trang - nên
+        // bỏ qua chứ KHÔNG dừng: chân trang của trang 1 nằm ngay giữa bảng.
+        const isContinuation = cells.every((cell) =>
+          previous.anchors.some((anchor) => Math.abs(anchor.x - cell.x) <= CONTINUATION_X_TOLERANCE),
+        );
+        if (!isContinuation) continue;
+
+        for (const cell of cells) {
+          let nearest = 0;
+          for (let i = 1; i < previous.anchors.length; i++) {
+            if (Math.abs(previous.anchors[i].x - cell.x) < Math.abs(previous.anchors[nearest].x - cell.x)) nearest = i;
+          }
+          if (nearest < previous.values.length) {
+            previous.values[nearest] = `${previous.values[nearest] ?? ''} ${cell.text}`.trim();
+          }
+        }
+      }
+
+      const result: T[] = [];
+      for (const row of collected) {
+        const item = options.build((key) => {
+          const position = columns.indexOf(key);
+          return position >= 0 ? row.values[position] : undefined;
+        }, result.length);
+        if (item) result.push(item);
+      }
+      if (result.length > 0) return result;
+    }
+    return [];
   }
 
   // ==================== Chat AI ====================

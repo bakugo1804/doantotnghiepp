@@ -47,8 +47,23 @@ export const IDENTITY_SECTION = 'Định danh';
 export const CUSTOMS_FIELDS: CustomsFieldDef[] = [
   { key: 'declarationNo', label: 'Số tờ khai', section: IDENTITY_SECTION, synonyms: ['so to khai', 'so tk', 'to khai so', 'declaration no', 'declaration number'] },
 
-  { key: 'entryDate', label: 'Ngày nhập cảnh', section: 'Thông tin chung', synonyms: ['ngay nhap canh', 'ngay nhap', 'entry date'] },
-  { key: 'exitDate', label: 'Ngày xuất cảnh', section: 'Thông tin chung', synonyms: ['ngay xuat canh', 'exit date'] },
+  // Hai mốc này là ĐIỂM ĐẦU và ĐIỂM CUỐI của hành trình vận chuyển, không phải
+  // "ngày nhập khẩu / ngày xuất khẩu" của lô hàng. Nhãn ghi rõ cả hai cách gọi vì
+  // biểu mẫu trắng còn được đưa cho bên khác điền tay - đọc mỗi chữ "nhập cảnh"
+  // rất dễ điền ngược thứ tự. Các cách viết cũ vẫn nằm trong synonyms để những
+  // file đã phát hành trước đó đọc lại được.
+  {
+    key: 'entryDate',
+    label: 'Ngày bắt đầu vận chuyển (nhập cảnh)',
+    section: 'Thông tin chung',
+    synonyms: ['ngay nhap canh', 'ngay nhap', 'entry date', 'ngay bat dau van chuyen', 'bat dau van chuyen', 'ngay bat dau'],
+  },
+  {
+    key: 'exitDate',
+    label: 'Ngày kết thúc vận chuyển (xuất cảnh)',
+    section: 'Thông tin chung',
+    synonyms: ['ngay xuat canh', 'exit date', 'ngay ket thuc van chuyen', 'ket thuc van chuyen', 'ngay ket thuc'],
+  },
   { key: 'flightNo', label: 'Số hiệu chuyến (bay/tàu)', section: 'Thông tin chung', synonyms: ['so hieu chuyen', 'so hieu chuyen bay tau', 'so chuyen bay', 'chuyen bay', 'ten tau', 'so hieu tau', 'flight no', 'so hieu tau xe'] },
 
   { key: 'exporterName', label: 'Nhà xuất khẩu', section: 'Bên xuất khẩu', synonyms: ['nha xuat khau', 'ten nha xuat khau', 'exporter', 'exporter name'] },

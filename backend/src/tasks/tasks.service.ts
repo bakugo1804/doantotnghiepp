@@ -105,10 +105,12 @@ export class TasksService {
     if (filters.status) where.status = filters.status;
 
     if (filters.date) {
-      const start = new Date(filters.date);
-      const end = new Date(filters.date);
-      end.setHours(23, 59, 59, 999);
-      where.workDate = { gte: start, lte: end };
+      // "2026-08-10" được Date hiểu là nửa đêm theo UTC, nhưng setHours lại đặt giờ
+      // theo múi giờ của máy chủ. Trộn hai hệ quy chiếu như trước khiến cửa sổ lọc
+      // chỉ dài 17 tiếng (ở múi +07) và bỏ sót việc của những giờ đầu ngày.
+      const start = new Date(`${filters.date}T00:00:00.000Z`);
+      const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+      where.workDate = { gte: start, lt: end };
     }
 
     return this.prisma.task.findMany({

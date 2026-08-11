@@ -53,6 +53,26 @@ export interface Task {
   assignedBy?: Pick<User, 'id' | 'fullName'>;
 }
 
+/** Một dòng trong danh mục mã HS dùng chung của doanh nghiệp. */
+export interface HsCode {
+  id: string;
+  code: string;
+  description: string;
+  defaultUnit?: string | null;
+  /** Thuế suất VAT ấn định riêng; để trống thì suy theo chương mã HS. */
+  vatRate?: number | null;
+  notes?: string | null;
+  /** true khi mã được tự sinh từ một tờ khai chứ không do người dùng chủ động thêm. */
+  autoCreated: boolean;
+  /** Thuế suất đang thực sự áp dụng, backend tính sẵn. */
+  effectiveVatRate: number;
+  /** Số dòng hàng trong các tờ khai đang dùng mã này. */
+  usageCount: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: { id: string; fullName: string } | null;
+}
+
 export interface Material {
   id: string;
   customsRecordId: string;
@@ -116,7 +136,12 @@ export interface CustomsRecord {
   currency: string;
   vatRate: number;
   vatAmount: number;
+  /** Thuế nhập khẩu - suy theo mã HS và xuất xứ, bằng 0 với hàng trong nước. */
+  importDutyRate: number;
+  importDutyAmount: number;
   shippingFee: number;
+  /** Tổng trọng lượng (kg) - biến chính khi tính phí vận chuyển. */
+  totalWeight: number;
   distanceKm?: number;
   exchangeRate?: number;
   totalPayable: number;
@@ -157,6 +182,8 @@ export interface CreateJourneyDto {
 }
 
 export interface CreateCustomsDto {
+  /** Để trống khi tạo mới thì hệ thống tự sinh; khi sửa thì giữ số hiện có. */
+  recordNo?: string;
   entryDate: string;
   exitDate?: string;
   transportType: TransportType;

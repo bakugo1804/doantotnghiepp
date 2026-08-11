@@ -79,6 +79,15 @@ export class CustomsController {
     return this.customsService.getAvailableTransitions(id, req.user);
   }
 
+  // Ràng buộc theo trạng thái (hồ sơ đã duyệt chỉ cấp quản lý sửa được) nằm trong
+  // service; guard ở đây chỉ loại VIEWER ra khỏi mọi thao tác ghi.
+  @ApiOperation({ summary: 'Sửa nội dung tờ khai' })
+  @Roles('ADMIN', 'DIRECTOR', 'STAFF')
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: CreateCustomsDto, @Request() req) {
+    return this.customsService.update(id, dto, req.user);
+  }
+
   // Quyền chi tiết theo từng bước nằm trong status-workflow.ts; guard ở đây chỉ
   // loại VIEWER ra khỏi mọi thao tác đổi trạng thái.
   @ApiOperation({ summary: 'Cập nhật trạng thái tờ khai theo quy trình duyệt' })

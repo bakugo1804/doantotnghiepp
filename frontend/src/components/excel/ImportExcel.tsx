@@ -1,8 +1,11 @@
 'use client';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { aiApi, reportsApi, downloadBlob, customsApi } from '@/lib/api';
-import { COUNTRIES, CURRENCIES, UNITS } from '@/lib/reference-data';
+import { COUNTRIES, UNITS, unitLabel } from '@/lib/reference-data';
+import { useHsCodes } from '@/hooks/useHsCodes';
+import { formatMoney, convertMoney, DEFAULT_EXCHANGE_RATE, normalizeCurrency } from '@/lib/money';
+import { isValidHsCode, normalizeHsCode, previewTotals } from '@/lib/tax-rules';
 import { FileSpreadsheet, FileText, Loader2, CheckCircle, Plus, Trash2 } from 'lucide-react';
 
 type Step = 'upload' | 'preview' | 'done';
@@ -37,7 +40,8 @@ type CustomsForm = {
   billOfLading?: string;
   containerNo?: string;
   currency: string;
-  vatRate?: number;
+  /** Tỷ giá lưu cùng tờ khai, để số quy đổi khớp với thời điểm lập hồ sơ. */
+  exchangeRate: number;
   notes?: string;
   materials: MaterialForm[];
 };
@@ -63,6 +67,31 @@ export function ImportExcel() {
   const [form, setForm] = useState<CustomsForm | null>(null);
   const [error, setError] = useState('');
   const [recordNoTaken, setRecordNoTaken] = useState(false);
+
+  // Danh mục mã HS dùng chung với trang tạo tờ khai.
+  const { data: hsCodes = [] } = useHsCodes();
+  const hsCodeByCode = useMemo(() => new Map(hsCodes.map((item) => [item.code, item])), [hsCodes]);
+
+  /** Thuế và phí tự tính theo đúng công thức backend, để xem trước trước khi lưu. */
+  const totals = useMemo(
+    () =>
+      previewTotals(
+        (form?.materials ?? []).map((m) => ({
+          hsCode: m.hsCode,
+          quantity: Number(m.quantity) || 0,
+          unitPrice: Number(m.unitPrice) || 0,
+          origin: m.origin,
+          weight: m.weight ?? null,
+        })),
+        {
+          exporterCountry: form?.exporterCountry,
+          importerCountry: form?.importerCountry,
+          transportType: form?.journeys?.[0]?.transportType,
+          distanceKm: 0,
+        },
+      ),
+    [form],
+  );
 
   // Kiểm tra trùng số tờ khai (debounce)
   useEffect(() => {
@@ -111,12 +140,12 @@ export function ImportExcel() {
         invoiceNo: data.invoiceNo || '',
         billOfLading: data.billOfLading || '',
         containerNo: data.containerNo || '',
-        currency: data.currency || 'USD',
-        vatRate: data.vatRate,
+        currency: normalizeCurrency(data.currency),
+        exchangeRate: Number(data.exchangeRate) > 0 ? Number(data.exchangeRate) : DEFAULT_EXCHANGE_RATE,
         notes: data.notes || '',
         materials: (data.materials || []).map((m: any, i: number) => ({
           itemNo: m.itemNo || i + 1,
-          hsCode: m.hsCode || '',
+          hsCode: normalizeHsCode(m.hsCode),
           description: m.description || '',
           quantity: Number(m.quantity) || 0,
           unit: m.unit || 'cái',
@@ -166,6 +195,27 @@ export function ImportExcel() {
     });
   };
 
+  /**
+   * Chọn mã HS đã có trong danh mục thì điền luôn tên hàng và đơn vị - giống hệt
+   * hành vi ở trang tạo tờ khai, để hai đường nhập liệu không lệch nhau.
+   */
+  const applyHsCode = (index: number, rawCode: string) => {
+    setForm((current) => {
+      if (!current) return current;
+      const materials = [...current.materials];
+      const known = hsCodeByCode.get(normalizeHsCode(rawCode));
+      materials[index] = known
+        ? {
+            ...materials[index],
+            hsCode: rawCode,
+            description: materials[index].description.trim() ? materials[index].description : known.description,
+            unit: known.defaultUnit || materials[index].unit,
+          }
+        : { ...materials[index], hsCode: rawCode };
+      return { ...current, materials };
+    });
+  };
+
   // ===== Vật tư =====
   const setMaterial = (index: number, key: keyof MaterialForm, value: any) => {
     setForm((current) => {
@@ -200,6 +250,21 @@ export function ImportExcel() {
       setError('Cần ít nhất 1 dòng vật tư và mỗi dòng phải có mô tả.');
       return;
     }
+    // Cùng bộ kiểm tra với trang tạo tờ khai: mã HS quyết định thuế suất, trọng
+    // lượng quyết định phí vận chuyển, nên hai đường nhập liệu không được nhận
+    // hai chuẩn dữ liệu khác nhau.
+    if (form.materials.some((m) => m.hsCode?.trim() && !isValidHsCode(m.hsCode))) {
+      setError('Có mã HS không hợp lệ. Mã HS phải gồm 4-10 chữ số, ví dụ 8471.30.');
+      return;
+    }
+    if (form.materials.some((m) => !(Number(m.weight) > 0))) {
+      setError('Mỗi dòng vật tư phải có trọng lượng (kg) để tính đúng phí vận chuyển.');
+      return;
+    }
+    if (form.exitDate && form.exitDate < form.entryDate) {
+      setError('Ngày kết thúc vận chuyển không thể trước ngày bắt đầu.');
+      return;
+    }
     if (recordNoTaken) {
       setError('Số tờ khai đã tồn tại. Vui lòng nhập số khác hoặc để trống để hệ thống tự sinh.');
       return;
@@ -221,9 +286,10 @@ export function ImportExcel() {
         // thì backend mặc định VN - VN và ra con số sai hoàn toàn.
         importerCountry: form.importerCountry,
         currency: form.currency,
+        exchangeRate: form.exchangeRate,
         materials: form.materials.map((m, i) => ({
           itemNo: i + 1,
-          hsCode: m.hsCode?.trim() || undefined,
+          hsCode: normalizeHsCode(m.hsCode) || undefined,
           description: m.description.trim(),
           quantity: Number(m.quantity) || 0,
           unit: m.unit?.trim() || 'cái',
@@ -231,6 +297,8 @@ export function ImportExcel() {
           origin: m.origin?.trim() || undefined,
           weight: m.weight ? Number(m.weight) : undefined,
         })),
+        // Thuế suất KHÔNG gửi lên: backend suy ra từ mã HS và xuất xứ, giống hệt
+        // trang tạo tờ khai. Gửi lên sẽ ghi đè toàn bộ phần tự tính.
       };
       if (form.recordNo?.trim()) payload.recordNo = form.recordNo.trim();
       if (form.exitDate) payload.exitDate = new Date(form.exitDate).toISOString();
@@ -240,7 +308,6 @@ export function ImportExcel() {
       if (form.invoiceNo?.trim()) payload.invoiceNo = form.invoiceNo.trim();
       if (form.billOfLading?.trim()) payload.billOfLading = form.billOfLading.trim();
       if (form.containerNo?.trim()) payload.containerNo = form.containerNo.trim();
-      if (form.vatRate != null && (form.vatRate as any) !== '') payload.vatRate = Number(form.vatRate);
       if (form.notes?.trim()) payload.notes = form.notes.trim();
 
       await customsApi.create(payload);
@@ -331,12 +398,14 @@ export function ImportExcel() {
                 className={`${inputCls} ${recordNoTaken ? 'border-red-500 ring-2 ring-red-100' : ''}`} placeholder="VD: TK2026-001" />
               {recordNoTaken && <p className="text-red-600 text-xs mt-1">⚠ Số tờ khai đã tồn tại, vui lòng nhập số khác.</p>}
             </div>
+            {/* Cùng cách gọi với trang tạo tờ khai: đây là hai đầu của hành trình
+                vận chuyển, không phải ngày nhập khẩu / xuất khẩu. */}
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày nhập cảnh</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày bắt đầu vận chuyển (nhập cảnh)</label>
               <input type="date" value={form.entryDate} onChange={(e) => setField('entryDate', e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày xuất cảnh</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Ngày kết thúc vận chuyển (xuất cảnh)</label>
               <input type="date" value={form.exitDate || ''} onChange={(e) => setField('exitDate', e.target.value)} className={inputCls} />
             </div>
             <div>
@@ -367,10 +436,6 @@ export function ImportExcel() {
                 {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.code})</option>)}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Thuế suất VAT (%)</label>
-              <input type="number" value={form.vatRate ?? ''} onChange={(e) => setField('vatRate', e.target.value === '' ? undefined : Number(e.target.value))} className={inputCls} />
-            </div>
             <div className="lg:col-span-3">
               <label className="block text-xs font-medium text-gray-600 mb-1">Địa chỉ nhà nhập khẩu</label>
               <input value={form.importerAddress || ''} onChange={(e) => setField('importerAddress', e.target.value)} className={inputCls} />
@@ -387,13 +452,7 @@ export function ImportExcel() {
               <label className="block text-xs font-medium text-gray-600 mb-1">Số container</label>
               <input value={form.containerNo || ''} onChange={(e) => setField('containerNo', e.target.value)} className={inputCls} />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Tiền tệ</label>
-              <select value={form.currency} onChange={(e) => setField('currency', e.target.value)} className={inputCls}>
-                {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>)}
-              </select>
-            </div>
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-3">
               <label className="block text-xs font-medium text-gray-600 mb-1">Ghi chú</label>
               <input value={form.notes || ''} onChange={(e) => setField('notes', e.target.value)} className={inputCls} />
             </div>
@@ -423,32 +482,54 @@ export function ImportExcel() {
           </div>
 
           {/* Vật tư */}
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
             <p className="font-medium text-gray-700">Vật tư ({form.materials.length} dòng)</p>
-            <button onClick={addMaterial} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100">
-              <Plus className="h-3.5 w-3.5" /> Thêm dòng
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Đồng tiền của đơn giá nằm cạnh bảng, y như trang tạo tờ khai. */}
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                Đơn giá theo
+                <div className="inline-flex overflow-hidden rounded-lg border border-gray-200 font-medium">
+                  {(['USD', 'VND'] as const).map((code) => (
+                    <button
+                      key={code}
+                      type="button"
+                      onClick={() => setField('currency', code)}
+                      aria-pressed={form.currency === code}
+                      className={`px-2.5 py-1 transition ${form.currency === code ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      {code}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button onClick={addMaterial} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100">
+                <Plus className="h-3.5 w-3.5" /> Thêm dòng
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto mb-6">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50">
-                  {['STT', 'Mã HS', 'Mô tả', 'SL', 'ĐV', 'Đơn giá', 'Xuất xứ', 'Trọng lượng (kg)', ''].map((h) => (
+                  {['STT', 'Mã HS', 'Mô tả', 'SL', 'ĐV', `Đơn giá (${form.currency})`, 'Xuất xứ', 'Trọng lượng (kg)', 'Thuế suất', ''].map((h) => (
                     <th key={h} className="text-left px-2 py-2 text-xs font-semibold text-gray-600">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {form.materials.map((m, i) => (
-                  <tr key={i} className="border-t border-gray-100">
+                  <tr key={i} className="border-t border-gray-100 align-top">
                     <td className="px-2 py-1.5 text-gray-500">{i + 1}</td>
-                    <td className="px-2 py-1.5"><input value={m.hsCode} onChange={(e) => setMaterial(i, 'hsCode', e.target.value)} className="w-20 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
-                    <td className="px-2 py-1.5"><input value={m.description} onChange={(e) => setMaterial(i, 'description', e.target.value)} className="w-48 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
+                    <td className="px-2 py-1.5">
+                      <input value={m.hsCode} onChange={(e) => applyHsCode(i, e.target.value)} list="import-hs-codes" placeholder="8471.30" className="w-24 rounded border border-gray-300 px-2 py-1 text-sm font-mono" />
+                      {m.hsCode?.trim() && !isValidHsCode(m.hsCode) && <p className="mt-0.5 text-[11px] text-rose-600">4-10 chữ số</p>}
+                    </td>
+                    <td className="px-2 py-1.5"><input value={m.description} onChange={(e) => setMaterial(i, 'description', e.target.value)} list="import-hs-descriptions" className="w-48 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
                     <td className="px-2 py-1.5"><input type="number" value={m.quantity} onChange={(e) => setMaterial(i, 'quantity', Number(e.target.value))} className="w-16 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
                     <td className="px-2 py-1.5">
                       <select value={m.unit} onChange={(e) => setMaterial(i, 'unit', e.target.value)} className="w-24 rounded border border-gray-300 px-2 py-1 text-sm">
-                        {UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
-                        {m.unit && !UNITS.includes(m.unit as any) && <option value={m.unit}>{m.unit}</option>}
+                        {UNITS.map((u) => <option key={u} value={u}>{unitLabel(u)}</option>)}
+                        {m.unit && !UNITS.includes(m.unit as any) && <option value={m.unit}>{unitLabel(m.unit)}</option>}
                       </select>
                     </td>
                     <td className="px-2 py-1.5"><input type="number" value={m.unitPrice} onChange={(e) => setMaterial(i, 'unitPrice', Number(e.target.value))} className="w-24 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
@@ -458,7 +539,26 @@ export function ImportExcel() {
                         {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}
                       </select>
                     </td>
-                    <td className="px-2 py-1.5"><input type="number" step="0.01" value={m.weight ?? ''} onChange={(e) => setMaterial(i, 'weight', e.target.value === '' ? undefined : Number(e.target.value))} className="w-24 rounded border border-gray-300 px-2 py-1 text-sm" /></td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        step="0.001"
+                        min={0}
+                        value={m.weight ?? ''}
+                        onChange={(e) => setMaterial(i, 'weight', e.target.value === '' ? undefined : Number(e.target.value))}
+                        placeholder="0"
+                        className={`w-24 rounded border px-2 py-1 text-sm ${Number(m.weight) > 0 ? 'border-gray-300' : 'border-rose-400 bg-rose-50/40'}`}
+                      />
+                      {!(Number(m.weight) > 0) && <p className="mt-0.5 text-[11px] text-rose-600">bắt buộc</p>}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap text-xs text-gray-500">
+                      {totals.lines[i] && (
+                        <>
+                          <span className="block">VAT {totals.lines[i].vatRate}%</span>
+                          <span className="block">NK {totals.lines[i].dutyRate}%</span>
+                        </>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5">
                       <button onClick={() => removeMaterial(i)} className="rounded p-1.5 text-rose-500 transition hover:bg-rose-50" title="Xóa dòng">
                         <Trash2 className="h-4 w-4" />
@@ -467,10 +567,44 @@ export function ImportExcel() {
                   </tr>
                 ))}
                 {form.materials.length === 0 && (
-                  <tr><td colSpan={9} className="px-2 py-6 text-center text-gray-400">Chưa có vật tư.</td></tr>
+                  <tr><td colSpan={10} className="px-2 py-6 text-center text-gray-400">Chưa có vật tư.</td></tr>
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Danh mục mã HS - dùng chung nguồn với trang tạo tờ khai */}
+          <datalist id="import-hs-codes">
+            {hsCodes.map((item) => <option key={item.id} value={item.code}>{item.description}</option>)}
+          </datalist>
+          <datalist id="import-hs-descriptions">
+            {hsCodes.map((item) => <option key={item.id} value={item.description}>{item.code}</option>)}
+          </datalist>
+
+          {/* Tổng hợp tài chính tự tính - trang này trước đây không hiện gì cả, nên
+              người dùng chỉ biết tiền thuế sau khi tờ khai đã được tạo. */}
+          <div className="mb-6 rounded-xl border border-gray-200 bg-gray-50 p-4">
+            <p className="mb-3 font-medium text-gray-700">Tổng hợp tài chính (hệ thống tự tính)</p>
+            <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-sm">
+              {[
+                { label: 'Trị giá hàng', value: totals.totalValue },
+                { label: `Thuế NK (${totals.importDutyRate}%)`, value: totals.importDutyAmount },
+                { label: `VAT (${totals.vatRate}%)`, value: totals.vatAmount },
+                { label: `Phí VC (${totals.totalWeight.toLocaleString('vi-VN')} kg)`, value: totals.shippingFee },
+              ].map((line) => (
+                <div key={line.label}>
+                  <dt className="text-xs text-gray-500">{line.label}</dt>
+                  <dd className="font-medium tabular-nums text-gray-900">{formatMoney(line.value, form.currency)}</dd>
+                </div>
+              ))}
+              <div>
+                <dt className="text-xs text-gray-500">Tổng thanh toán</dt>
+                <dd className="font-semibold tabular-nums text-blue-700">{formatMoney(totals.totalPayable, form.currency)}</dd>
+                <dd className="text-xs tabular-nums text-gray-500">
+                  ≈ {formatMoney(convertMoney(totals.totalPayable, form.currency, form.currency === 'USD' ? 'VND' : 'USD', form.exchangeRate), form.currency === 'USD' ? 'VND' : 'USD')}
+                </dd>
+              </div>
+            </dl>
           </div>
 
           {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-sm mb-4">{error}</div>}

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
 import { CUSTOMS_FIELDS, CustomsFieldKey, IDENTITY_SECTION, JOURNEY_COLUMNS, MATERIAL_COLUMNS, TRANSPORT_LABELS } from '../common/customs-form';
+import { calcDeclarationTotals } from '../customs/financial-rules';
 
 // pdfmake (server-side) — nạp font Roboto (hỗ trợ tiếng Việt) từ vfs của pdfmake
 const PdfPrinter = require('pdfmake');
@@ -19,7 +20,19 @@ type ScopeUser = { sub: string; role: string; companyId?: string | null };
 
 type JourneyRow = { legNumber: number; transportType: string; origin: string; destination: string };
 type MaterialRow = { itemNo?: number; hsCode?: string; description?: string; quantity?: number; unit?: string; unitPrice?: number; origin?: string; weight?: number };
-type Totals = { totalValue: number; vatAmount: number; shippingFee: number; totalPayable: number; vatRate: number; currency: string };
+type Totals = {
+  totalValue: number;
+  vatAmount: number;
+  vatRate: number;
+  /** Thuế nhập khẩu - 0 với hàng trong nước, xem financial-rules.ts. */
+  importDutyRate: number;
+  importDutyAmount: number;
+  shippingFee: number;
+  /** Tổng trọng lượng (kg), là căn cứ tính phí vận chuyển nên phải in ra để đối chiếu. */
+  totalWeight: number;
+  totalPayable: number;
+  currency: string;
+};
 
 /** Mô hình trung gian dùng chung cho xuất Excel & PDF (từ bản ghi DB hoặc dữ liệu đã parse). */
 interface FormModel {
@@ -44,11 +57,44 @@ const SECTION_ORDER = ['Thông tin chung', 'Bên xuất khẩu', 'Bên nhập kh
 const FORM_COLS = MATERIAL_COLUMNS.length;
 const LAST_COL = String.fromCharCode(64 + FORM_COLS); // 8 -> 'H'
 
-/** Bề rộng từng cột, đặt theo cột tương ứng của bảng vật tư. */
-const COL_WIDTHS = [7, 15, 30, 11, 10, 15, 13, 14];
+/**
+ * Bề rộng từng cột, đặt theo cột tương ứng của bảng vật tư.
+ *
+ * Cột cuối phải đủ chứa nhãn "Trọng lượng (kg)" (16 ký tự). Hẹp hơn thì Excel
+ * ngắt nhãn xuống dòng hai, mà dòng hai lại nằm ngoài chiều cao đã khoá của dòng
+ * tiêu đề nên bị cắt - đúng hiện tượng cột trọng lượng "lồi ra ngoài" khung.
+ */
+const COL_WIDTHS = [6, 14, 32, 11, 10, 14, 12, 17];
+
+/** Khối nhãn của một trường chiếm A:C, khối giá trị chiếm D:H. */
+const LABEL_WIDTH = COL_WIDTHS.slice(0, 3).reduce((a, b) => a + b, 0);
+const VALUE_WIDTH = COL_WIDTHS.slice(3).reduce((a, b) => a + b, 0);
+
+/** Xấp xỉ số dòng mà Excel phải ngắt để hiển thị hết `text` trong bề rộng `width`. */
+function wrapLines(text: unknown, width: number): number {
+  const length = String(text ?? '').length;
+  if (!length) return 1;
+  // Trừ 1 cho phần thụt lề (indent) đang đặt ở các ô nhãn/giá trị.
+  return Math.max(1, Math.ceil(length / Math.max(width - 1, 4)));
+}
+
+/** Chiều cao (pt) đủ chỗ cho `lines` dòng chữ, kèm khoảng đệm trên dưới. */
+function rowHeightFor(lines: number): number {
+  return 6 + lines * 14;
+}
 
 const BRAND = 'FF1E40AF';
 const LIGHT = 'FFEFF4FF';
+
+/**
+ * Số dòng trống trên biểu mẫu trắng.
+ *
+ * Hai con số này dùng chung cho cả Excel và PDF: trước đây Excel chừa 6 chặng / 8
+ * vật tư còn PDF chừa 4 chặng / 5 vật tư, nên cùng một "mẫu tờ khai" mà hai bản
+ * lại khác nhau, và bên nào điền bản PDF sẽ thiếu dòng so với bản Excel.
+ */
+const TEMPLATE_JOURNEY_ROWS = 6;
+const TEMPLATE_MATERIAL_ROWS = 6;
 
 @Injectable()
 export class ReportsService {
@@ -131,9 +177,12 @@ export class ReportsService {
       totals: {
         totalValue: record.totalValue,
         vatAmount: record.vatAmount,
-        shippingFee: record.shippingFee,
-        totalPayable: record.totalPayable,
         vatRate: record.vatRate,
+        importDutyRate: record.importDutyRate ?? 0,
+        importDutyAmount: record.importDutyAmount ?? 0,
+        shippingFee: record.shippingFee,
+        totalWeight: record.totalWeight ?? 0,
+        totalPayable: record.totalPayable,
         currency: record.currency,
       },
     };
@@ -158,9 +207,27 @@ export class ReportsService {
       destination: j.destination || '',
     }));
     const currency = p.currency || 'USD';
-    const vatRate = p.vatRate != null ? Number(p.vatRate) : 10;
-    const totalValue = materials.reduce((s, m) => s + (Number(m.quantity) || 0) * (Number(m.unitPrice) || 0), 0);
-    const vatAmount = (totalValue * vatRate) / 100;
+    // Dùng đúng bộ quy tắc của tờ khai thật, để bản chuyển đổi từ file không ra
+    // con số khác với bản được lưu vào hệ thống từ cùng dữ liệu đó.
+    const computed = calcDeclarationTotals(
+      materials.map((m) => ({
+        hsCode: m.hsCode,
+        quantity: Number(m.quantity) || 0,
+        unitPrice: Number(m.unitPrice) || 0,
+        origin: m.origin,
+        weight: m.weight,
+      })),
+      {
+        exporterCountry: p.exporterCountry,
+        importerCountry: p.importerCountry,
+        // p.transportType là mã enum (AIR/SEA/...), còn journeys phía trên đã đổi
+        // sang nhãn tiếng Việt nên không dùng được để tra bảng đơn giá.
+        transportType: p.transportType,
+        distanceKm: p.distanceKm,
+        vatRateOverride: p.vatRate != null ? Number(p.vatRate) : undefined,
+      },
+    );
+    const vatRate = computed.vatRate;
     const values: Record<CustomsFieldKey, string> = {
       declarationNo: p.recordNo || '',
       entryDate: p.entryDate ? new Date(p.entryDate).toLocaleDateString('vi-VN') : '',
@@ -184,7 +251,17 @@ export class ReportsService {
       values,
       journeys,
       materials,
-      totals: { totalValue, vatAmount, shippingFee: 0, totalPayable: totalValue + vatAmount, vatRate, currency },
+      totals: {
+        totalValue: computed.totalValue,
+        vatAmount: computed.vatAmount,
+        vatRate: computed.vatRate,
+        importDutyRate: computed.importDutyRate,
+        importDutyAmount: computed.importDutyAmount,
+        shippingFee: computed.shippingFee,
+        totalWeight: computed.totalWeight,
+        totalPayable: computed.totalPayable,
+        currency,
+      },
     };
   }
 
@@ -193,6 +270,18 @@ export class ReportsService {
   private drawFormSheet(sheet: ExcelJS.Worksheet, model: FormModel, isTemplate: boolean) {
     const { values, journeys, materials, recordNo, totals } = model;
     COL_WIDTHS.forEach((w, i) => (sheet.getColumn(i + 1).width = w));
+
+    // Tổng bề ngang 8 cột vượt khổ A4, nên nếu không co lại thì các cột cuối
+    // (Xuất xứ, Trọng lượng) bị đẩy sang trang thứ hai khi in.
+    sheet.pageSetup = {
+      paperSize: 9, // A4
+      orientation: 'portrait',
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      horizontalCentered: true,
+      margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
+    };
 
     const thin: Partial<ExcelJS.Borders> = {
       top: { style: 'thin', color: { argb: 'FFBFBFBF' } },
@@ -269,17 +358,21 @@ export class ReportsService {
         valueCell.alignment = { vertical: 'middle', indent: 1, wrapText: true };
         valueCell.border = thin;
         if (isTemplate && f.key === 'currency') valueCell.dataValidation = { type: 'list', allowBlank: true, formulae: ['"USD,VND"'] } as any;
-        sheet.getRow(r).height = 18;
+        // Ô đã gộp thì Excel không tự giãn chiều cao được, nên giá trị dài (địa chỉ,
+        // ghi chú) sẽ bị cắt mất phần ngắt dòng nếu khoá cứng ở một dòng.
+        sheet.getRow(r).height = rowHeightFor(
+          Math.max(wrapLines(f.label, LABEL_WIDTH), wrapLines(values[f.key], VALUE_WIDTH)),
+        );
         r++;
       }
       r++;
     }
 
     // Bảng HÀNH TRÌNH (nhiều chặng)
-    r = this.drawTable(sheet, r, thin, 'HÀNH TRÌNH VẬN CHUYỂN', JOURNEY_COLUMNS.map((c) => c.label), [0.5, 2, 2.6, 2.6], isTemplate ? this.blankRows(6, JOURNEY_COLUMNS.length) : journeys.map((j) => [j.legNumber, j.transportType, j.origin, j.destination]));
+    r = this.drawTable(sheet, r, thin, 'HÀNH TRÌNH VẬN CHUYỂN', JOURNEY_COLUMNS.map((c) => c.label), [0.5, 2, 2.6, 2.6], isTemplate ? this.blankRows(TEMPLATE_JOURNEY_ROWS, JOURNEY_COLUMNS.length) : journeys.map((j) => [j.legNumber, j.transportType, j.origin, j.destination]));
 
     // Bảng VẬT TƯ - mỗi cột logic chiếm đúng 1 cột vật lý
-    r = this.drawTable(sheet, r + 1, thin, 'DANH MỤC HÀNG HÓA / VẬT TƯ', MATERIAL_COLUMNS.map((c) => c.label), MATERIAL_COLUMNS.map(() => 1), isTemplate ? this.blankRows(8, MATERIAL_COLUMNS.length) : materials.map((m, i) => [i + 1, m.hsCode ?? '', m.description ?? '', m.quantity ?? '', m.unit ?? '', m.unitPrice ?? '', m.origin ?? '', m.weight ?? '']), true);
+    r = this.drawTable(sheet, r + 1, thin, 'DANH MỤC HÀNG HÓA / VẬT TƯ', MATERIAL_COLUMNS.map((c) => c.label), MATERIAL_COLUMNS.map(() => 1), isTemplate ? this.blankRows(TEMPLATE_MATERIAL_ROWS, MATERIAL_COLUMNS.length) : materials.map((m, i) => [i + 1, m.hsCode ?? '', m.description ?? '', m.quantity ?? '', m.unit ?? '', m.unitPrice ?? '', m.origin ?? '', m.weight ?? '']), true);
 
     // Tổng kết
     if (totals) {
@@ -298,12 +391,19 @@ export class ReportsService {
         r++;
       };
       addTotal('Tổng giá trị hàng:', this.fmtMoney(totals.totalValue, totals.currency));
+      if (totals.totalWeight) addTotal('Tổng trọng lượng:', `${totals.totalWeight.toLocaleString('vi-VN')} kg`);
+      // Thuế nhập khẩu đứng trước VAT vì VAT được tính trên trị giá đã có thuế
+      // nhập khẩu; in ngược thứ tự sẽ không giải thích được con số tổng.
+      if (totals.importDutyAmount) {
+        addTotal(`Thuế nhập khẩu (${totals.importDutyRate}%):`, this.fmtMoney(totals.importDutyAmount, totals.currency));
+      }
       addTotal(`Thuế VAT (${totals.vatRate}%):`, this.fmtMoney(totals.vatAmount, totals.currency));
       if (totals.shippingFee) addTotal('Phí vận chuyển:', this.fmtMoney(totals.shippingFee, totals.currency));
       addTotal('TỔNG THANH TOÁN:', this.fmtMoney(totals.totalPayable, totals.currency), true);
     }
 
-    // Chữ ký xác nhận
+    // Khu vực chữ ký: phải có khoảng trống thật để ký tay sau khi in, chứ không
+    // chỉ là hai dòng chữ sát nhau.
     r += 2;
 
     // Dòng địa điểm - ngày tháng, căn phải phía trên chữ ký bên phải.
@@ -333,7 +433,22 @@ export class ReportsService {
 
     signatureRow('NGƯỜI KHAI BÁO', 'XÁC NHẬN CỦA GIÁM ĐỐC', { bold: true, size: 10 });
     signatureRow('(Ký, ghi rõ họ tên)', '(Ký, ghi rõ họ tên)', { italic: true, size: 9, color: { argb: 'FF64748B' } });
-    sheet.getRow(r - 1).height = 50;
+
+    // Bốn dòng trống cao 18pt = khoảng 1,8cm chỗ ký, rồi một dòng gạch chân để
+    // biết ký vào đâu. Bản trước chỉ có một dòng cao 50 nên in ra không đủ chỗ.
+    for (let blank = 0; blank < 4; blank += 1) {
+      sheet.mergeCells(`A${r}:D${r}`);
+      sheet.mergeCells(`E${r}:${LAST_COL}${r}`);
+      sheet.getRow(r).height = 18;
+      r++;
+    }
+
+    const underline: Partial<ExcelJS.Borders> = { bottom: { style: 'thin', color: { argb: 'FF94A3B8' } } };
+    sheet.mergeCells(`B${r}:C${r}`);
+    sheet.getCell(`B${r}`).border = underline;
+    sheet.mergeCells(`F${r}:G${r}`);
+    sheet.getCell(`F${r}`).border = underline;
+    sheet.getRow(r).height = 16;
   }
 
   /** Vẽ 1 bảng (tiêu đề + header cột + các dòng dữ liệu) trên toàn bộ bề ngang biểu mẫu. Trả về row tiếp theo. */
@@ -350,6 +465,9 @@ export class ReportsService {
 
     // Map các cột logic sang các cột vật lý theo trọng số
     const spans = this.spread(weights, FORM_COLS);
+    /** Bề rộng thực tế (tính theo ký tự) của cột logic thứ i. */
+    const spanWidth = (i: number) => COL_WIDTHS.slice(spans[i][0] - 1, spans[i][1]).reduce((a, b) => a + b, 0);
+
     const headerRow = sheet.getRow(r);
     headers.forEach((h, i) => {
       const [c1, c2] = spans[i];
@@ -361,7 +479,7 @@ export class ReportsService {
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       cell.border = thin;
     });
-    sheet.getRow(r).height = 22;
+    sheet.getRow(r).height = rowHeightFor(Math.max(...headers.map((h, i) => wrapLines(h, spanWidth(i)))));
     r++;
 
     for (const row of rows) {
@@ -376,7 +494,9 @@ export class ReportsService {
         const leftAlign = descIsCol3 ? i === 2 : i >= 2;
         cell.alignment = { vertical: 'middle', horizontal: leftAlign ? 'left' : 'center', indent: leftAlign ? 1 : 0, wrapText: true };
       });
-      sheet.getRow(r).height = 18;
+      // Mô tả hàng hoá dài hơn bề rộng cột thì phải nới dòng ra, nếu không tên
+      // hàng bị cắt còn một nửa ngay trên bản in.
+      sheet.getRow(r).height = rowHeightFor(Math.max(...row.map((v, i) => wrapLines(v, spanWidth(i)))));
       r++;
     }
     return r;
@@ -434,8 +554,18 @@ export class ReportsService {
   }
 
   async exportTemplateExcel(): Promise<Buffer> {
+    return this.modelToExcel(this.emptyModel(), true);
+  }
+
+  /**
+   * Biểu mẫu trắng - dùng chung cho cả Excel và PDF.
+   *
+   * Hai bản mẫu phải sinh ra từ cùng một model, nếu không chúng lại lệch nhau như
+   * trước (Excel 6 chặng/8 vật tư, PDF 4 chặng/5 vật tư).
+   */
+  private emptyModel(): FormModel {
     const emptyValues = Object.fromEntries(CUSTOMS_FIELDS.map((f) => [f.key, ''])) as Record<CustomsFieldKey, string>;
-    return this.modelToExcel({ values: emptyValues, journeys: [], materials: [] }, true);
+    return { values: emptyValues, journeys: [], materials: [] };
   }
 
   /** Dựng file Excel từ model (dùng cho export & chuyển đổi). */
@@ -460,20 +590,22 @@ export class ReportsService {
         { text: values[f.key] || (isTemplate ? '' : '—'), style: 'fieldValue' },
       ]);
       return {
-        table: { widths: ['40%', '60%'], body: rows },
-        layout: { hLineColor: () => '#e2e8f0', vLineColor: () => '#e2e8f0', hLineWidth: () => 0.5, vLineWidth: () => 0.5, paddingTop: () => 4, paddingBottom: () => 4 },
-        margin: [0, 0, 0, 10],
+        table: { widths: ['42%', '58%'], body: rows },
+        // Đệm 2pt thay vì 4pt: nhân với 18 ô của biểu mẫu là hơn 70pt chiều cao,
+        // đủ để khối chữ ký bị đẩy sang trang thứ hai.
+        layout: { hLineColor: () => '#e2e8f0', vLineColor: () => '#e2e8f0', hLineWidth: () => 0.5, vLineWidth: () => 0.5, paddingTop: () => 2, paddingBottom: () => 2 },
+        margin: [0, 0, 0, 6],
       };
     };
     const sectionHeader = (t: string) => ({ text: t.toUpperCase(), style: 'sectionHeader', margin: [0, 6, 0, 4] });
 
     const journeyRows = isTemplate
-      ? Array.from({ length: 4 }, (_, i) => [String(i + 1), '', '', ''])
+      ? Array.from({ length: TEMPLATE_JOURNEY_ROWS }, (_, i) => [String(i + 1), '', '', ''])
       : journeys.map((j) => [String(j.legNumber), j.transportType, j.origin, j.destination]);
     const journeyBody = [JOURNEY_COLUMNS.map((c) => ({ text: c.label, style: 'tableHeader' })), ...journeyRows.map((row) => row.map((v, i) => ({ text: String(v ?? ''), alignment: i === 0 ? 'center' : 'left' })))];
 
     const materialRows = isTemplate
-      ? Array.from({ length: 5 }, (_, i) => [String(i + 1), '', '', '', '', '', '', ''])
+      ? Array.from({ length: TEMPLATE_MATERIAL_ROWS }, (_, i) => [String(i + 1), '', '', '', '', '', '', ''])
       : materials.map((m, i) => [String(i + 1), m.hsCode || '—', m.description || '', this.fmtMoney(m.quantity || 0), m.unit || '', this.fmtMoney(m.unitPrice || 0), m.origin || '—', m.weight != null ? this.fmtMoney(m.weight) : '—']);
     const materialBody = [
       MATERIAL_COLUMNS.map((c) => ({ text: c.label, style: 'tableHeader' })),
@@ -504,19 +636,28 @@ export class ReportsService {
         ],
         columnGap: 12,
       },
-      sectionHeader('Chứng từ'),
-      infoTable('Chứng từ'),
-
-      // Không có khối này thì tiền tệ, thuế suất VAT và ghi chú không hề xuất
-      // hiện trên bản PDF, nên khi đọc ngược lại file sẽ mất trắng ba trường đó.
-      sectionHeader('Tài chính'),
-      infoTable('Tài chính'),
+      // Chứng từ và Tài chính xếp cạnh nhau cho gọn chiều cao: biểu mẫu trắng phải
+      // vừa một trang mà vẫn còn chỗ ký ở cuối, chứ không đẩy phần chữ ký sang
+      // trang thứ hai.
+      //
+      // Khối Tài chính là bắt buộc: không có nó thì tiền tệ, thuế suất VAT và ghi
+      // chú không hề xuất hiện trên bản PDF, và khi đọc ngược lại file sẽ mất
+      // trắng ba trường đó.
+      {
+        columns: [
+          [sectionHeader('Chứng từ'), infoTable('Chứng từ')],
+          [sectionHeader('Tài chính'), infoTable('Tài chính')],
+        ],
+        columnGap: 12,
+      },
 
       sectionHeader('Hành trình vận chuyển'),
-      { table: { headerRows: 1, widths: [28, 90, '*', '*'], body: journeyBody }, layout: this.tableLayout(), margin: [0, 0, 0, 12] },
+      { table: { headerRows: 1, widths: [28, 90, '*', '*'], body: journeyBody, dontBreakRows: true }, layout: this.tableLayout(), margin: [0, 0, 0, 8] },
 
       sectionHeader('Danh mục hàng hóa / vật tư'),
-      { table: { headerRows: 1, widths: [18, 44, '*', 40, 32, 52, 44, 40], body: materialBody }, layout: this.tableLayout(), margin: [0, 0, 0, 12] },
+      // Cột "Trọng lượng (kg)" phải đủ rộng cho nhãn của nó: hẹp hơn thì nhãn ngắt
+      // xuống ba dòng và đội cao cả dòng tiêu đề.
+      { table: { headerRows: 1, widths: [22, 42, '*', 38, 32, 46, 36, 52], body: materialBody, dontBreakRows: true }, layout: this.tableLayout(), margin: [0, 0, 0, 8] },
     ];
 
     if (totals) {
@@ -528,6 +669,14 @@ export class ReportsService {
             table: {
               body: [
                 [{ text: 'Tổng giá trị hàng:', style: 'totLabel' }, { text: this.fmtMoney(totals.totalValue, cur), style: 'totValue' }],
+                ...(totals.totalWeight
+                  ? [[{ text: 'Tổng trọng lượng:', style: 'totLabel' }, { text: `${totals.totalWeight.toLocaleString('vi-VN')} kg`, style: 'totValue' }]]
+                  : []),
+                // Thuế nhập khẩu in trước VAT vì VAT tính trên trị giá đã có thuế
+                // nhập khẩu - in ngược thì không giải thích được con số tổng.
+                ...(totals.importDutyAmount
+                  ? [[{ text: `Thuế nhập khẩu (${totals.importDutyRate}%):`, style: 'totLabel' }, { text: this.fmtMoney(totals.importDutyAmount, cur), style: 'totValue' }]]
+                  : []),
                 [{ text: `Thuế VAT (${totals.vatRate}%):`, style: 'totLabel' }, { text: this.fmtMoney(totals.vatAmount, cur), style: 'totValue' }],
                 ...(totals.shippingFee ? [[{ text: 'Phí vận chuyển:', style: 'totLabel' }, { text: this.fmtMoney(totals.shippingFee, cur), style: 'totValue' }]] : []),
                 [{ text: 'TỔNG THANH TOÁN:', style: 'totLabelBold' }, { text: this.fmtMoney(totals.totalPayable, cur), style: 'totValueBold' }],
@@ -539,16 +688,44 @@ export class ReportsService {
       });
     }
 
+    // Khu vực ký: bản in phải có chỗ ký tay thật.
+    //
+    // Trước đây chỉ có hai dòng chữ đặt cách nội dung 30pt, nên tờ khai kín chữ
+    // từ trên xuống dưới và không còn khoảng trắng nào để đặt bút. Ở đây mỗi bên
+    // được chừa 64pt trắng rồi mới tới đường kẻ ký, và cả khối được đánh dấu
+    // unbreakable để không bị tách làm hai trang.
+    const signatureColumn = (title: string) => ({
+      width: '*',
+      stack: [
+        { text: title, bold: true, alignment: 'center' as const },
+        { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 8, alignment: 'center' as const, color: '#64748b' },
+        {
+          canvas: [{ type: 'line', x1: 40, y1: 0, x2: 200, y2: 0, lineWidth: 0.7, lineColor: '#94a3b8' }],
+          margin: [0, 64, 0, 0],
+        },
+      ],
+    });
+
     content.push({
-      columns: [
-        { stack: [{ text: 'Người khai báo', bold: true, alignment: 'center' }, { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 8, alignment: 'center', color: '#64748b' }], margin: [0, 30, 0, 0] },
-        { stack: [{ text: 'Xác nhận của Giám đốc', bold: true, alignment: 'center' }, { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 8, alignment: 'center', color: '#64748b' }], margin: [0, 30, 0, 0] },
+      unbreakable: true,
+      stack: [
+        {
+          text: isTemplate
+            ? '……………………, ngày …… tháng …… năm ………'
+            : `Hà Nội, ngày ${new Date().getDate()} tháng ${new Date().getMonth() + 1} năm ${new Date().getFullYear()}`,
+          italics: true,
+          alignment: 'right',
+          color: '#334155',
+          margin: [0, 18, 8, 10],
+        },
+        { columns: [signatureColumn('Người khai báo'), signatureColumn('Xác nhận của Giám đốc')], columnGap: 16 },
       ],
     });
 
     return {
       pageSize: 'A4',
-      pageMargins: [36, 40, 36, 48],
+      // Lề dưới rộng hơn lề trên: đây là mép giấy hay bị kẹp/đóng ghim khi lưu hồ sơ.
+      pageMargins: [36, 40, 36, 56],
       defaultStyle: { font: 'Roboto', fontSize: 9, color: '#1e293b' },
       footer: (currentPage: number, pageCount: number) => ({
         columns: [
@@ -623,8 +800,7 @@ export class ReportsService {
   }
 
   async exportTemplatePdf(): Promise<Buffer> {
-    const emptyValues = Object.fromEntries(CUSTOMS_FIELDS.map((f) => [f.key, ''])) as Record<CustomsFieldKey, string>;
-    return this.modelToPdf({ values: emptyValues, journeys: [], materials: [] }, true);
+    return this.modelToPdf(this.emptyModel(), true);
   }
 
   // ==================== Chuyển đổi file ====================

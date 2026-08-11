@@ -17,9 +17,11 @@ import {
   Users,
 } from 'lucide-react';
 import { customsApi, usersApi } from '@/lib/api';
-import { formatCurrency, formatDateTime, roleLabel, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { formatDateTime, roleLabel, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
+import { convertMoney, formatMoneyIn } from '@/lib/money';
 import { compactCurrency, compactNumber, formatMonthKey, STATUS_COLOR_VAR, STATUS_ORDER, TRANSPORT_ORDER } from '@/lib/viz';
 import { useLocale } from '@/components/settings/LocaleProvider';
+import { CurrencyToggle, Money, useDisplayCurrency } from '@/components/settings/CurrencyProvider';
 import { ChartCard, VizTable } from '@/components/charts/ChartCard';
 import { TrendChart } from '@/components/charts/TrendChart';
 import { StackedBar } from '@/components/charts/StackedBar';
@@ -38,7 +40,10 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
   const isAdmin = role === 'ADMIN';
   const canManageUsers = role === 'ADMIN' || role === 'DIRECTOR';
   const { locale } = useLocale();
+  const { display } = useDisplayCurrency();
   const vi = locale === 'vi';
+  // Số liệu tổng hợp từ backend đã quy về USD; đổi tiếp sang đồng tiền đang xem.
+  const money = (value: number) => compactCurrency(convertMoney(value, 'USD', display), display, vi ? 'vi-VN' : 'en-US');
 
   const { data: recordsData, isLoading: isRecordsLoading } = useQuery({
     queryKey: ['dashboard-records', role],
@@ -229,6 +234,10 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
       </section>
 
       {/* Hàng chỉ số */}
+      <div className="flex items-center justify-end gap-2 text-xs text-slate-500 dark:text-slate-400">
+        {vi ? 'Xem tiền theo' : 'Show money in'}
+        <CurrencyToggle />
+      </div>
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatTile
           label={copy.totalRecords}
@@ -250,7 +259,7 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
         />
         <StatTile
           label={copy.totalValue}
-          value={compactCurrency(totalPayable, 'USD', vi ? 'vi-VN' : 'en-US')}
+          value={money(totalPayable)}
           hint={copy.totalValueHint}
           icon={CircleDollarSign}
           loading={isStatsLoading}
@@ -337,7 +346,7 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
           table={
             <VizTable
               head={[copy.companyCol, copy.valueCol]}
-              rows={companyRows.map((row: any) => [row.label, formatCurrency(row.value, 'USD')])}
+              rows={companyRows.map((row: any) => [row.label, formatMoneyIn(row.value, 'USD', display)])}
             />
           }
         >
@@ -347,7 +356,7 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
             <RankedBars
               rows={companyRows}
               emptyLabel={copy.empty}
-              formatValue={(value) => compactCurrency(value, 'USD', vi ? 'vi-VN' : 'en-US')}
+              formatValue={money}
             />
           )}
         </ChartCard>
@@ -450,7 +459,7 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
 
                   <div className="shrink-0 text-left lg:text-right">
                     <p className="font-semibold tabular-nums text-slate-900">
-                      {formatCurrency(record.totalPayable, record.currency)}
+                      <Money value={record.totalPayable} currency={record.currency} rate={record.exchangeRate} />
                     </p>
                     <Link
                       href={`/dashboard/customs/${record.id}`}

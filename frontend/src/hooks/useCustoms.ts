@@ -32,6 +32,20 @@ export function useCreateCustoms() {
   });
 }
 
+export function useUpdateCustoms() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: CreateCustomsDto }) =>
+      customsApi.update(id, data).then((r) => r.data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['customs'] });
+      qc.invalidateQueries({ queryKey: ['customs', variables.id] });
+      // Sửa nội dung ghi thêm một dòng nhật ký, nên danh bạ công ty cũng cần làm mới.
+      qc.invalidateQueries({ queryKey: ['companies'] });
+    },
+  });
+}
+
 /** Các bước xử lý tiếp theo mà vai trò hiện tại được phép thực hiện. */
 export function useCustomsTransitions(id: string) {
   return useQuery({

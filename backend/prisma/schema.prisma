@@ -64,6 +64,7 @@ model User {
   statusChanges  CustomsStatusHistory[] @relation("StatusChanges")
   company        Company?       @relation("CompanyMembers", fields: [companyId], references: [id], onDelete: SetNull)
   notifications  Notification[]
+  hsCodes        HsCode[]
 
   @@map("users")
 }
@@ -125,9 +126,16 @@ model CustomsRecord {
   // Tài chính
   totalValue      Float     @default(0)
   currency        String    @default("USD")
-  vatRate         Float     @default(10)    // % VAT
+  vatRate         Float     @default(10)    // % VAT - bình quân gia quyền theo mã HS của hàng
   vatAmount       Float     @default(0)     // Tiền VAT
-  shippingFee     Float     @default(0)     // Phí vận chuyển
+  /// Thuế nhập khẩu: suy theo mã HS và xuất xứ từng dòng hàng, bằng 0 với hàng
+  /// trong nước. Tách riêng khỏi VAT vì đây là hai loại thuế khác nhau và VAT
+  /// được tính trên trị giá ĐÃ có thuế nhập khẩu.
+  importDutyRate  Float     @default(0)
+  importDutyAmount Float    @default(0)
+  shippingFee     Float     @default(0)     // Phí vận chuyển - phụ thuộc trọng lượng và tuyến
+  /// Tổng trọng lượng (kg) của lô hàng, là biến chính khi tính phí vận chuyển.
+  totalWeight     Float     @default(0)
   distanceKm      Float     @default(0)
   exchangeRate    Float     @default(25000)
   totalPayable    Float     @default(0)     // Tổng tiền phải trả
@@ -235,6 +243,38 @@ model Material {
   updatedAt       DateTime @updatedAt
 
   @@map("materials")
+}
+
+/// Danh mục mã HS dùng chung của doanh nghiệp.
+///
+/// Trước đây gợi ý mã HS là một mảng cứng trong mã nguồn frontend, nên nhân viên
+/// gặp mặt hàng mới là phải gõ tay lại mã đó ở mọi tờ khai, và không có chỗ nào
+/// lưu lại để lần sau dùng. Bảng này cho phép quản lý danh mục ngay trên giao
+/// diện, và tờ khai khai mã mới sẽ tự bổ sung vào đây.
+model HsCode {
+  id          String   @id @default(cuid())
+
+  /// Mã HS, chuẩn hoá về dạng có dấu chấm (vd "8471.30").
+  code        String   @unique
+  /// Tên hàng hoá tương ứng.
+  description String
+  /// Đơn vị tính thường dùng, để form khai báo chọn sẵn giúp.
+  defaultUnit String?
+  /// Thuế suất VAT ấn định riêng; để trống thì suy theo chương mã HS.
+  vatRate     Float?
+  notes       String?
+
+  /// true khi mã được tự sinh từ một tờ khai chứ không do người dùng chủ động thêm.
+  autoCreated Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdById String?
+  createdBy   User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([description])
+  @@map("hs_codes")
 }
 
 model Attachment {

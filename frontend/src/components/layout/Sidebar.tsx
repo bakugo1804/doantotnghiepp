@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Building2, FileSearch, FileText, LayoutDashboard, ListTodo, BarChart3, Settings, Ship, Upload, Users, ArrowLeftRight } from 'lucide-react';
+import { Barcode, Building2, FileSearch, FileText, LayoutDashboard, ListTodo, BarChart3, Settings, Ship, Upload, Users, ArrowLeftRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppPreferences } from '@/components/settings/AppPreferencesProvider';
 import { useLocale } from '@/components/settings/LocaleProvider';
@@ -22,6 +22,7 @@ export function Sidebar({ role }: { role: string }) {
         navItems: [
           { href: '/dashboard', label: 'Tổng quan', icon: LayoutDashboard },
           { href: '/dashboard/customs', label: 'Tờ khai', icon: FileText },
+          { href: '/dashboard/hs-codes', label: 'Mã HS', icon: Barcode },
           { href: '/dashboard/search', label: 'Tìm kiếm', icon: FileSearch },
           { href: '/dashboard/companies', label: 'Công ty', icon: Building2 },
           { href: '/dashboard/tasks', label: 'Giao việc', icon: ListTodo },
@@ -44,6 +45,7 @@ export function Sidebar({ role }: { role: string }) {
         navItems: [
           { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
           { href: '/dashboard/customs', label: 'Declarations', icon: FileText },
+          { href: '/dashboard/hs-codes', label: 'HS codes', icon: Barcode },
           { href: '/dashboard/search', label: 'Search', icon: FileSearch },
           { href: '/dashboard/companies', label: 'Companies', icon: Building2 },
           { href: '/dashboard/tasks', label: 'Tasks', icon: ListTodo },

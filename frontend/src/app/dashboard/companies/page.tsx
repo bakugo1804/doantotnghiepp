@@ -6,7 +6,8 @@ import { useSession } from 'next-auth/react';
 import { Building2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { companiesApi } from '@/lib/api';
 import { useLocale } from '@/components/settings/LocaleProvider';
-import { formatCurrency, formatDateTime } from '@/lib/utils';
+import { formatDateTime } from '@/lib/utils';
+import { CurrencyToggle, Money } from '@/components/settings/CurrencyProvider';
 import type { CompanySummary } from '@/types';
 
 export default function CompaniesPage() {
@@ -151,8 +152,8 @@ export default function CompaniesPage() {
         ))}
       </div>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="relative">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="relative min-w-[220px] flex-1">
           <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
           <input
             value={search}
@@ -160,6 +161,10 @@ export default function CompaniesPage() {
             placeholder={isVietnamese ? 'Tìm theo tên công ty...' : 'Search company names...'}
             className="w-full rounded-2xl border border-gray-300 py-3 pl-12 pr-4 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          {isVietnamese ? 'Xem tiền theo' : 'Show money in'}
+          <CurrencyToggle />
         </div>
       </div>
 
@@ -188,7 +193,9 @@ export default function CompaniesPage() {
               </div>
               <div className="flex items-center justify-between rounded-xl bg-gray-50 px-4 py-3">
                 <dt className="text-gray-500">{isVietnamese ? 'Tổng giá trị' : 'Total value'}</dt>
-                <dd className="font-medium text-gray-900">{formatCurrency(company.totalPayable, company.currency)}</dd>
+                <dd className="font-medium text-gray-900">
+                  <Money value={company.totalPayable} currency={company.currency} />
+                </dd>
               </div>
               {company.contactEmail && (
                 <div className="flex items-center justify-between rounded-xl bg-gray-50 px-4 py-3">

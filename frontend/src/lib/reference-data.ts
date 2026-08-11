@@ -59,16 +59,8 @@ export const countryLabel = (code?: string | null) => {
   return country ? `${country.flag} ${country.name}` : code;
 };
 
-/**
- * Thuế suất VAT nhập khẩu theo nước xuất xứ.
- * Giữ khớp với backend/src/customs/financial-rules.ts - lệch nhau thì con số xem
- * trước trên form sẽ khác con số thực tế được lưu.
- */
-export const VAT_BY_COUNTRY: Record<string, number> = {
-  VN: 10, TH: 7, SG: 9, MY: 8, CN: 13, KR: 10, JP: 10, US: 8, EU: 20,
-};
-
-export const getVatRateByCountry = (code?: string) => VAT_BY_COUNTRY[(code || 'VN').toUpperCase()] ?? 10;
+// Thuế suất không còn tra theo quốc gia nữa: mức thuế phụ thuộc MẶT HÀNG (mã HS)
+// và xuất xứ của từng dòng hàng. Xem lib/tax-rules.ts.
 
 /** Đơn vị tính theo thông lệ khai báo hải quan. */
 export const UNITS = [
@@ -76,13 +68,36 @@ export const UNITS = [
   'kg', 'tấn', 'gram', 'lít', 'mét', 'm2', 'm3', 'pallet', 'container',
 ] as const;
 
+/**
+ * Nhãn đơn vị tính để hiển thị: viết hoa chữ cái đầu.
+ *
+ * Giá trị lưu xuống cơ sở dữ liệu vẫn để chữ thường - đó là khoá gom nhóm, đổi
+ * thành "Cái" sẽ tách dữ liệu cũ ("cái") thành hai đơn vị khác nhau. Chỉ phần
+ * nhìn thấy được viết hoa. Các đơn vị đo lường quốc tế (kg, m2, m3) giữ nguyên
+ * vì viết hoa là sai chuẩn.
+ */
+const UNITS_KEEP_LOWERCASE = new Set(['kg', 'g', 'mg', 'm2', 'm3', 'ml', 'cm', 'mm', 'km']);
+
+export const unitLabel = (unit?: string | null): string => {
+  const value = String(unit ?? '').trim();
+  if (!value) return '';
+  if (UNITS_KEEP_LOWERCASE.has(value.toLowerCase())) return value.toLowerCase();
+  return value.charAt(0).toLocaleUpperCase('vi-VN') + value.slice(1);
+};
+
 export const CURRENCIES = [
   { code: 'USD', name: 'Đô la Mỹ', symbol: '$' },
   { code: 'VND', name: 'Việt Nam Đồng', symbol: '₫' },
 ] as const;
 
-/** Nhóm mã HS hay gặp, dùng làm gợi ý khi nhập vật tư. */
-export const HS_CODE_SUGGESTIONS: { code: string; label: string }[] = [
+/**
+ * Bộ mã HS khởi tạo danh mục.
+ *
+ * Danh mục thật nằm trong cơ sở dữ liệu (bảng hs_codes) và được quản lý ở trang
+ * "Mã HS"; mảng này chỉ dùng để seed lần đầu, KHÔNG dùng làm gợi ý trên form nữa -
+ * gợi ý cứng trong mã nguồn là lý do nhân viên phải gõ lại mã ở mọi tờ khai.
+ */
+export const HS_CODE_SEED: { code: string; label: string }[] = [
   { code: '8471.30', label: 'Máy tính xách tay' },
   { code: '8517.12', label: 'Điện thoại di động' },
   { code: '8528.72', label: 'Tivi màu' },
