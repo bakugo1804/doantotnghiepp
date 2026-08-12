@@ -6,6 +6,10 @@
  * gõ sẽ khác con số hiện ra sau khi lưu, và không ai biết bên nào đúng.
  */
 
+// Tỷ giá mặc định lấy từ money.ts thay vì viết lại số 25000 ở đây: cùng một con số
+// nằm ở hai chỗ thì sớm muộn cũng có chỗ được sửa mà chỗ kia bị bỏ quên.
+import { DEFAULT_EXCHANGE_RATE } from './money';
+
 export const DEFAULT_VAT_RATE = 10;
 
 /** Chương mã HS = 2 chữ số đầu. "8471.30" -> "84". */
@@ -186,7 +190,7 @@ function weightedRate(pairs: [number, number][]): number {
 /** Quy đổi một số tiền USD sang đồng tiền của tờ khai - khớp fromUsd ở backend. */
 function fromUsd(amountUsd: number, currency?: string, exchangeRate?: number): number {
   if (String(currency || 'USD').toUpperCase() !== 'VND') return Number(amountUsd.toFixed(2));
-  const rate = Number(exchangeRate) > 0 ? Number(exchangeRate) : 25000;
+  const rate = Number(exchangeRate) > 0 ? Number(exchangeRate) : DEFAULT_EXCHANGE_RATE;
   return Math.round(amountUsd * rate);
 }
 

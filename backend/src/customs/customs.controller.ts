@@ -73,6 +73,18 @@ export class CustomsController {
     return this.customsService.checkRecordNo(recordNo);
   }
 
+  /**
+   * Đặt TRƯỚC route ':id' - Nest so khớp theo thứ tự khai báo, để sau thì
+   * 'recalculate-financials' bị hiểu là một id tờ khai.
+   */
+  @ApiOperation({ summary: 'Tính lại số tiền của mọi tờ khai theo công thức hiện hành' })
+  @ApiQuery({ name: 'dryRun', required: false, description: 'true = chỉ liệt kê chỗ lệch, không ghi' })
+  @Roles('ADMIN', 'DIRECTOR')
+  @Post('recalculate-financials')
+  recalculateFinancials(@Request() req, @Query('dryRun') dryRun?: string) {
+    return this.customsService.recalculateFinancials(req.user, { dryRun: dryRun === 'true' });
+  }
+
   @ApiOperation({ summary: 'Chi tiết tờ khai' })
   @Get(':id')
   findOne(@Param('id') id: string, @Request() req) {

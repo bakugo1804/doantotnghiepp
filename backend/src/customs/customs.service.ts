@@ -77,6 +77,12 @@ export class CustomsService {
       };
     });
 
+    // Thuế suất do người dùng gửi lên chỉ được dùng khi không có mã HS nào để suy
+    // ra. Có mã HS mà vẫn nhận số gửi lên thì một tờ khai máy móc điện tử (VAT 8%)
+    // sẽ bị ghi thành 10% chỉ vì biểu mẫu cũ hoặc một client nào đó gửi kèm - trong
+    // khi cả hệ thống đã chuyển sang tính thuế theo hàng hoá.
+    const hasHsCode = materials.some((material) => material.hsCode);
+
     const totals = calcDeclarationTotals(
       dto.materials.map((material) => ({
         hsCode: normalizeHsCode(material.hsCode) || null,
@@ -90,7 +96,7 @@ export class CustomsService {
         importerCountry,
         transportType: dto.transportType,
         distanceKm: dto.distanceKm,
-        vatRateOverride: dto.vatRate,
+        vatRateOverride: hasHsCode ? undefined : dto.vatRate,
         // Đơn giá hàng hoá đang ghi bằng đồng tiền này, nên phí vận chuyển (niêm
         // yết bằng USD) phải quy đổi về đây mới cộng chung được.
         currency: dto.currency,
@@ -193,6 +199,85 @@ export class CustomsService {
       leg2Origin: fallback.leg2Origin ?? null,
       leg2Destination: fallback.leg2Destination ?? null,
     };
+  }
+
+  /**
+   * Tính lại toàn bộ số tiền của các tờ khai đã lưu theo công thức hiện hành.
+   *
+   * Vì sao cần: cột tiền được tính một lần lúc lưu rồi giữ nguyên (để còn sắp xếp
+   * và cộng dồn bằng SQL). Mỗi lần quy tắc thuế hay phí thay đổi, những hồ sơ lưu
+   * trước đó vẫn giữ con số cũ - trong khi phần chuyển đổi tệp lại tính lại tại
+   * chỗ. Kết quả là cùng một tờ khai, bản Excel xuất ra ghi một số (lấy từ CSDL)
+   * mà bản PDF chuyển đổi từ chính tệp đó ghi một số khác. Đo trên dữ liệu thật đã
+   * gặp trường hợp lệch từ 14.211 lên 14.738.949 vì phí vận chuyển cũ lưu bằng USD
+   * trong một tờ khai ghi bằng VND.
+   *
+   * Hàm này chỉ ghi lại các cột tổng hợp; không đụng tới hàng hoá, trạng thái hay
+   * nhật ký. Trả về danh sách những hồ sơ thực sự bị sửa để còn đối chiếu.
+   */
+  async recalculateFinancials(user: AuthUser, options: { dryRun?: boolean } = {}) {
+    if (!MANAGER_ROLES.includes(user.role)) {
+      throw new ForbiddenException('Chỉ Giám đốc hoặc Trưởng phòng được đồng bộ lại số liệu tài chính.');
+    }
+
+    const records = await this.prisma.customsRecord.findMany({
+      include: { materials: true, journeys: { orderBy: { legNumber: 'asc' } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const changed: Array<{ recordNo: string; before: Record<string, number>; after: Record<string, number> }> = [];
+
+    for (const record of records) {
+      const totals = calcDeclarationTotals(
+        record.materials.map((material) => ({
+          hsCode: material.hsCode,
+          quantity: Number(material.quantity) || 0,
+          unitPrice: Number(material.unitPrice) || 0,
+          origin: material.origin,
+          weight: material.weight,
+        })),
+        {
+          exporterCountry: record.exporterCountry,
+          importerCountry: record.importerCountry,
+          // Phí vận chuyển tính theo chặng đầu, đúng như lúc tạo tờ khai.
+          transportType: record.journeys[0]?.transportType || record.transportType,
+          distanceKm: record.distanceKm ?? undefined,
+          currency: record.currency,
+          exchangeRate: record.exchangeRate ?? undefined,
+        },
+      );
+
+      const next = this.toFinancialColumns(totals);
+      const differs = Object.entries(next).some(([key, value]) => {
+        const current = Number((record as any)[key] ?? 0);
+        return Math.abs(current - Number(value)) > 0.01;
+      });
+      if (!differs) continue;
+
+      changed.push({
+        recordNo: record.recordNo,
+        before: { totalValue: record.totalValue, shippingFee: record.shippingFee, vatAmount: record.vatAmount, totalPayable: record.totalPayable },
+        after: { totalValue: next.totalValue, shippingFee: next.shippingFee, vatAmount: next.vatAmount, totalPayable: next.totalPayable },
+      });
+
+      // Dòng hàng cũng lưu sẵn totalPrice, nên phải cập nhật cùng lúc để bảng chi
+      // tiết không cộng ra một con số khác với dòng tổng ngay bên dưới nó.
+      if (!options.dryRun) {
+        await this.prisma.$transaction([
+          this.prisma.customsRecord.update({ where: { id: record.id }, data: next }),
+          ...record.materials.map((material) =>
+            this.prisma.material.update({
+              where: { id: material.id },
+              data: {
+                totalPrice: Number(((Number(material.quantity) || 0) * (Number(material.unitPrice) || 0)).toFixed(2)),
+              },
+            }),
+          ),
+        ]);
+      }
+    }
+
+    return { total: records.length, changed: changed.length, dryRun: !!options.dryRun, records: changed };
   }
 
   /** Ánh xạ kết quả tính thuế sang đúng các cột của bảng tờ khai. */

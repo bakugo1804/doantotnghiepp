@@ -207,6 +207,20 @@ export class ReportsService {
       destination: j.destination || '',
     }));
     const currency = p.currency || 'USD';
+
+    /**
+     * Thuế suất ghi trên file chỉ được dùng khi KHÔNG có mã HS nào để suy ra.
+     *
+     * Ô "Thuế suất VAT" trên biểu mẫu là con số bình quân gia quyền của các dòng
+     * hàng, đã làm tròn tới 2 chữ số thập phân khi in ra. Đem con số làm tròn đó
+     * áp phẳng lên toàn bộ tờ khai thì tiền thuế lệch khỏi bản gốc - đo trên dữ
+     * liệu thật thì lệch 0,7 đến 2,1 đơn vị tiền, tức là cùng một tờ khai mà bản
+     * Excel và bản PDF ghi hai con số khác nhau. Có mã HS thì tính lại theo từng
+     * dòng, ra đúng con số ban đầu.
+     */
+    const hasHsCode = materials.some((m) => String(m.hsCode ?? '').trim() !== '');
+    const writtenVatRate = p.vatRate != null && Number(p.vatRate) > 0 ? Number(p.vatRate) : undefined;
+
     // Dùng đúng bộ quy tắc của tờ khai thật, để bản chuyển đổi từ file không ra
     // con số khác với bản được lưu vào hệ thống từ cùng dữ liệu đó.
     const computed = calcDeclarationTotals(
@@ -224,7 +238,7 @@ export class ReportsService {
         // sang nhãn tiếng Việt nên không dùng được để tra bảng đơn giá.
         transportType: p.transportType,
         distanceKm: p.distanceKm,
-        vatRateOverride: p.vatRate != null ? Number(p.vatRate) : undefined,
+        vatRateOverride: hasHsCode ? undefined : writtenVatRate,
         currency,
         exchangeRate: p.exchangeRate,
       },
@@ -621,11 +635,39 @@ export class ReportsService {
       // Số tờ khai đứng riêng một dòng bắt đầu bằng đúng nhãn của nó: khi đọc
       // ngược file PDF, bộ đọc dò theo từng dòng "Nhãn: giá trị", nên nếu ghép
       // chung dòng với "Mẫu số" thì hai chuỗi dính liền và không tách ra được.
+      //
+      // Ở bản mẫu để in, giá trị là một Ô TRỐNG CÓ KHUNG chứ không phải dòng dấu
+      // chấm. Viết tay chồng lên dãy dấu chấm thì chính người đọc cũng phải đoán,
+      // và mô hình đọc ảnh bỏ trắng ô này ở cả 3 lần thử; đổi sang ô trống có khung
+      // là nét chữ nằm trên nền sạch, giống mọi ô khác của biểu mẫu.
       {
-        text: `Số tờ khai: ${model.recordNo || (isTemplate ? '………………………' : '—')}`,
-        alignment: 'right',
-        bold: true,
-        color: '#334155',
+        columns: [
+          { text: '', width: '*' },
+          {
+            width: 'auto',
+            table: {
+              widths: [64, 132],
+              body: [
+                [
+                  { text: 'Số tờ khai', style: 'fieldLabel', alignment: 'right' },
+                  { text: model.recordNo || '', style: 'fieldValue', alignment: 'center' },
+                ],
+              ],
+            },
+            // Layout riêng, KHÔNG dùng tableLayout(): hàm đó tô đậm dòng đầu vì nó
+            // dành cho bảng có dòng tiêu đề, còn đây là một ô nhập liệu duy nhất -
+            // dùng chung sẽ ra một ô đen kín, không viết được gì lên.
+            layout: {
+              fillColor: () => null,
+              hLineColor: () => '#94a3b8',
+              vLineColor: () => '#94a3b8',
+              hLineWidth: () => 0.5,
+              vLineWidth: () => 0.5,
+              paddingTop: () => 3,
+              paddingBottom: () => 3,
+            },
+          },
+        ],
         margin: [0, 2, 0, 12],
       },
 

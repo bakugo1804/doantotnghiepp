@@ -10,6 +10,7 @@ import {
   matchMaterialColumn,
   matchJourneyColumn,
   MATERIAL_COLUMNS,
+  JOURNEY_COLUMNS,
   MaterialFieldKey,
   JourneyFieldKey,
   isPlaceholderText,
@@ -35,6 +36,25 @@ const CHAT_HISTORY_LIMIT = 4;
 
 /** Quá mốc này coi như phiên trò chuyện mới, không gửi kèm lịch sử cũ nữa. */
 const CHAT_SESSION_WINDOW_MS = 30 * 60 * 1000;
+
+/** Câu yêu cầu gửi kèm ảnh, dùng chung cho mọi lượt đọc ảnh. */
+const VISION_INSTRUCTION = 'Đọc ảnh và trả về đúng một đối tượng JSON theo cấu trúc đã cho.';
+
+/**
+ * Lượt hỏi bổ sung chỉ dành cho ô "Số tờ khai".
+ *
+ * Ô này nằm lẻ ở góc trên phải, không thuộc khối nào, nên trong một câu hỏi gộp mô
+ * hình hay bỏ qua nó. Hỏi riêng bằng một câu ngắn thì đọc đúng.
+ */
+const VISION_DECLARATION_NO_PROMPT = `Bạn đọc chữ viết tay trên ảnh chụp tờ khai hải quan Việt Nam.
+
+Chỉ đọc DUY NHẤT ô có nhãn "Số tờ khai" nằm ở góc trên bên phải tờ khai, ngay dưới
+dòng "Mẫu số". Bỏ qua tất cả phần còn lại.
+
+Trả về đúng một đối tượng JSON: { "declarationNo": "giá trị đọc được" }
+
+- Ghi lại đúng chuỗi ký tự viết trong ô đó, giữ nguyên cả chữ và số.
+- Ô đó trống thì trả về chuỗi rỗng "".`;
 
 type ParsedMaterial = {
   itemNo: number;
@@ -252,7 +272,13 @@ export class AiService {
     const vat = fields.vatRate ? this.toNumber(fields.vatRate) : undefined;
     return {
       recordNo: fields.declarationNo || undefined,
-      entryDate: this.parseDate(fields.entryDate) || new Date().toISOString(),
+      // Không đọc được ngày thì để TRỐNG, không lấy ngày hôm nay.
+      //
+      // Trước đây thiếu ngày là điền ngày hôm nay: biểu mẫu hiện ra với một ngày
+      // trông hợp lý nên người dùng bấm lưu mà không để ý, và tờ khai mang sai mốc
+      // thời gian vận chuyển. Ô trống thì bộ kiểm tra của biểu mẫu chặn lại và buộc
+      // người dùng tự điền - sai sót lộ ra thay vì bị che đi.
+      entryDate: this.parseDate(fields.entryDate) || '',
       exitDate: this.parseDate(fields.exitDate),
       transportType: journeys[0]?.transportType || 'AIR',
       flightNo: fields.flightNo || undefined,
@@ -745,25 +771,62 @@ export class AiService {
       );
     }
 
-    const system = this.buildVisionSystemPrompt();
-    const instruction = 'Đọc tờ khai trong ảnh và trả về đúng một đối tượng JSON theo cấu trúc đã cho.';
-    let raw: string;
-    try {
-      raw =
-        this.visionApiStyle === 'ollama'
-          ? await this.askOllamaVision(system, instruction, buffer)
-          : await this.askOpenAiVision(system, instruction, buffer, mimeType);
-    } catch (err: any) {
-      throw this.describeAiFailure(err, this.visionModel);
-    }
+    const ask = async (parts: { system?: string; user: string }) => {
+      try {
+        const raw =
+          this.visionApiStyle === 'ollama'
+            ? await this.askOllamaVision(parts.system, parts.user, buffer)
+            : await this.askOpenAiVision(parts.system, parts.user, buffer, mimeType);
+        return this.extractJson(raw);
+      } catch (err: any) {
+        throw this.describeAiFailure(err, this.visionModel);
+      }
+    };
 
-    const parsed = this.extractJson(raw);
-    if (!parsed) {
+    // Hỏi TÁCH THÀNH NHIỀU LƯỢT chứ không dồn cả tờ khai vào một câu hỏi.
+    //
+    // Đo trên cùng một ảnh: hỏi gộp cả 16 trường lẫn hai bảng trong một lần thì mô
+    // hình bỏ trắng số vận đơn và số tờ khai, lặp lại ở mọi lần thử; hỏi riêng từng
+    // phần thì đọc đúng. Nó KHÔNG phải không nhìn thấy - hỏi thẳng "ô Số tờ khai ghi
+    // gì" là trả lời đúng ngay. Càng nhiều thứ phải trả về một lượt, mô hình nhỏ càng
+    // đánh rơi vài ô. Chi phí của việc tách: mỗi lượt thêm khoảng 6 giây.
+    const [header, tables] = await Promise.all([
+      ask({ system: this.buildVisionHeaderPrompt(), user: VISION_INSTRUCTION }),
+      ask({ system: this.buildVisionTablePrompt(), user: VISION_INSTRUCTION }),
+    ]);
+    if (!header && !tables) {
       throw new ServiceUnavailableException(
         'Mô hình không trả về dữ liệu đọc được từ ảnh. Hãy chụp lại rõ hơn (đủ sáng, thẳng góc, thấy trọn tờ khai) rồi thử lại.',
       );
     }
-    return this.assembleFromVision(parsed);
+
+    const data: any = { ...(tables ?? {}), ...(header ?? {}) };
+
+    /**
+     * Lượt hỏi bù cho những ô vẫn còn trống.
+     *
+     * Mô hình đánh rơi ô một cách ngẫu nhiên chứ không phải vì không đọc được: cùng
+     * một ảnh, lượt trên bỏ trắng hai ô ngày trong khi hỏi riêng thì đọc đúng ngay.
+     *
+     * Câu hỏi bù đặt ở lượt NGƯỜI DÙNG, ngắn, không kèm lời nhắc hệ thống. Đây không
+     * phải chuyện hình thức: thử đúng nội dung ấy dưới dạng lời nhắc hệ thống kèm các
+     * luật "tuyệt đối không suy diễn / ô trắng thì để rỗng" thì mô hình trả rỗng hết,
+     * còn hỏi thẳng thì đọc ra giá trị. Bộ luật nghiêm ngặt cần cho lượt đọc cả trang
+     * lại làm mô hình ngả về "không chắc thì bỏ" ở lượt soi lại từng ô.
+     *
+     * Vẫn giữ một câu nhắc ô trắng để rỗng, và đã kiểm chứng trên hai ảnh mẫu: hai ô
+     * "Thuế suất VAT" và "Ghi chú" thật sự trắng thì lượt này trả về rỗng, không bịa.
+     */
+    const missing = CUSTOMS_FIELDS.filter((field) => isPlaceholderText(data[field.key]));
+    if (missing.length > 0) {
+      const extra = await ask({ user: this.buildVisionGapQuestion(missing) });
+      for (const field of missing) {
+        const value = String(extra?.[field.key] ?? '').trim();
+        if (value && !isPlaceholderText(value)) data[field.key] = value;
+      }
+    }
+
+    return this.assembleFromVision(data);
   }
 
   /**
@@ -772,7 +835,7 @@ export class AiService {
    * Dùng fetch thẳng thay vì thư viện openai: đây là dạng yêu cầu mà thư viện đó
    * không mô tả được (ảnh nằm ở trường "images" riêng, không phải data URL).
    */
-  private async askOllamaVision(system: string, instruction: string, buffer: Buffer): Promise<string> {
+  private async askOllamaVision(system: string | undefined, instruction: string, buffer: Buffer): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
     try {
@@ -793,7 +856,8 @@ export class AiService {
             num_predict: 1600,
           },
           messages: [
-            { role: 'system', content: system },
+            // Lượt hỏi bù cố ý KHÔNG có lời nhắc hệ thống - xem ghi chú ở parseImage.
+            ...(system ? [{ role: 'system', content: system }] : []),
             { role: 'user', content: instruction, images: [buffer.toString('base64')] },
           ],
         }),
@@ -810,7 +874,7 @@ export class AiService {
   }
 
   /** Gọi nhà cung cấp tương thích OpenAI (ảnh gửi dưới dạng data URL). */
-  private async askOpenAiVision(system: string, instruction: string, buffer: Buffer, mimeType: string): Promise<string> {
+  private async askOpenAiVision(system: string | undefined, instruction: string, buffer: Buffer, mimeType: string): Promise<string> {
     const dataUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
     const response = await this.visionClient!.chat.completions.create({
       model: this.visionModel,
@@ -818,7 +882,7 @@ export class AiService {
       max_tokens: 1600,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: system },
+        ...(system ? [{ role: 'system' as const, content: system }] : []),
         {
           role: 'user',
           content: [
@@ -832,13 +896,61 @@ export class AiService {
   }
 
   /**
-   * Lời nhắc hệ thống cho mô hình thị giác.
+   * Lời nhắc cho lượt đọc PHẦN TRÊN tờ khai (các ô đơn lẻ, không có bảng).
    *
-   * Nhãn trường được sinh trực tiếp từ CUSTOMS_FIELDS - cùng nguồn với phần xuất
-   * và đọc tệp, nên đổi nhãn biểu mẫu ở một chỗ là lời nhắc này đổi theo.
+   * Nhãn trường được sinh trực tiếp từ CUSTOMS_FIELDS - cùng nguồn với phần xuất và
+   * đọc tệp, nên đổi nhãn biểu mẫu ở một chỗ là lời nhắc này đổi theo.
    */
-  private buildVisionSystemPrompt(): string {
+  private buildVisionHeaderPrompt(): string {
     const fieldLines = CUSTOMS_FIELDS.map((f) => `  "${f.key}": chữ viết ở ô "${f.label}"`).join('\n');
+
+    return `Bạn đọc chữ viết tay trên ảnh chụp tờ khai hải quan Việt Nam.
+
+Chỉ đọc PHẦN TRÊN của tờ khai: ô "Số tờ khai" ở góc trên bên phải, và các khối
+THÔNG TIN CHUNG, BÊN XUẤT KHẨU, BÊN NHẬP KHẨU, CHỨNG TỪ, TÀI CHÍNH.
+Bỏ qua hai bảng ở nửa dưới và phần chữ ký ở cuối trang.
+
+Trả về DUY NHẤT một đối tượng JSON với đúng các khoá sau, không kèm giải thích:
+{
+${fieldLines}
+}
+
+QUY TẮC BẮT BUỘC:
+- Chỉ đọc đúng chữ nhìn thấy trên giấy. TUYỆT ĐỐI KHÔNG suy diễn, không tự bù thông tin thiếu.
+- Ô nào CÓ chữ viết tay thì bắt buộc phải ghi lại. Chỉ ô thật sự trắng, hoặc chỉ có
+  dấu gạch ngang, dấu chấm lửng, mới trả về chuỗi rỗng "".
+- Dãy số dài đọc từng chữ số một, ghi liền không dấu cách.
+- Ngày giữ nguyên đúng như trên giấy, ví dụ "11/8/2026". Trong khối THÔNG TIN CHUNG,
+  dòng trên là ngày bắt đầu vận chuyển, dòng dưới là ngày kết thúc vận chuyển.
+- Không đọc dòng địa điểm - ngày tháng và tên người ký ở cuối trang.`;
+  }
+
+  /**
+   * Câu hỏi bù, chỉ liệt kê những ô lượt trước để trống, kèm vị trí của từng ô để
+   * mô hình khỏi phải dò lại cả trang.
+   */
+  private buildVisionGapQuestion(missing: typeof CUSTOMS_FIELDS): string {
+    const lines = missing
+      .map((field) => {
+        const where =
+          field.key === 'declarationNo'
+            ? 'ô riêng ở góc trên bên phải, ngay dưới dòng "Mẫu số"'
+            : `thuộc khối ${field.section.toUpperCase()}`;
+        return `- "${field.key}": ô "${field.label}" — ${where}`;
+      })
+      .join('\n');
+
+    return `Đây là ảnh chụp một tờ khai hải quan đã điền tay. Đọc giúp giá trị viết trong ${
+      missing.length > 1 ? `${missing.length} ô sau` : 'ô sau'
+    }:
+${lines}
+
+Trả về đúng một đối tượng JSON với các khoá trên. Ngày giữ nguyên như trên giấy, ví dụ
+"11/8/2026". Ô nào trên giấy để trắng thì giá trị là "".`;
+  }
+
+  /** Lời nhắc cho lượt đọc HAI BẢNG ở nửa dưới tờ khai. */
+  private buildVisionTablePrompt(): string {
     // Cột STT bị loại khỏi danh sách hỏi mô hình, vì hai lẽ:
     //
     // 1. Không cần: số thứ tự dòng được đánh lại theo đúng trật tự đọc được
@@ -848,34 +960,28 @@ export class AiService {
     //    lại 3/3 lần, bỏ dòng đó ra thì 3/3 lần đọc được. Lời nhắc càng nhiều mục
     //    vụn thì mô hình nhỏ càng dễ đánh rơi những ô nó vốn đọc được.
     const materialCols = MATERIAL_COLUMNS.filter((c) => c.key !== 'itemNo')
-      .map((c) => `"${c.key}" (cột ${c.label})`)
+      .map((c) => `"${c.key}": cột "${c.label}"`)
+      .join(', ');
+    const journeyCols = JOURNEY_COLUMNS.filter((c) => c.key !== 'legNumber')
+      .map((c) => `"${c.key}": cột "${c.label}"`)
       .join(', ');
 
-    return `Bạn là bộ trích xuất dữ liệu từ ảnh chụp tờ khai hải quan Việt Nam đã điền tay.
+    return `Bạn đọc chữ viết tay trên ảnh chụp tờ khai hải quan Việt Nam.
 
-Biểu mẫu có tiêu đề "TỜ KHAI HÀNG HÓA XUẤT KHẨU, NHẬP KHẨU", gồm các khối: THÔNG TIN CHUNG,
-BÊN XUẤT KHẨU, BÊN NHẬP KHẨU, CHỨNG TỪ, TÀI CHÍNH, bảng HÀNH TRÌNH VẬN CHUYỂN và bảng
-DANH MỤC HÀNG HÓA / VẬT TƯ.
+Chỉ đọc HAI BẢNG ở nửa dưới tờ khai: "HÀNH TRÌNH VẬN CHUYỂN" và
+"DANH MỤC HÀNG HÓA / VẬT TƯ". Bỏ qua toàn bộ phần trên và phần chữ ký.
 
-Trả về DUY NHẤT một đối tượng JSON, không kèm giải thích, không bọc trong khối mã.
-Cấu trúc:
+Trả về DUY NHẤT một đối tượng JSON, không kèm giải thích:
 {
-${fieldLines}
-  "journeys": [ { "legNumber": số, "transportType": chữ ở cột Loại vận chuyển, "origin": Điểm đi, "destination": Điểm đến } ],
+  "journeys": [ { ${journeyCols} } ],
   "materials": [ { ${materialCols} } ]
 }
 
 QUY TẮC BẮT BUỘC:
-- Chỉ đọc đúng chữ nhìn thấy trên giấy. TUYỆT ĐỐI KHÔNG suy diễn, không tự bù thông tin thiếu.
-- Ô nào để trống, hoặc chỉ có dấu gạch ngang, dấu chấm lửng, thì trả về chuỗi rỗng "".
-- Chỉ đưa vào "journeys" và "materials" những dòng CÓ chữ viết tay. Dòng trống thì bỏ hẳn.
-- Ngày giữ nguyên đúng như trên giấy, ví dụ "11/8/2026".
-- Khối THÔNG TIN CHUNG có ba dòng theo đúng thứ tự từ trên xuống: "Ngày bắt đầu vận
-  chuyển", rồi "Ngày kết thúc vận chuyển", rồi "Số hiệu chuyến". Đọc theo đúng thứ tự
-  dòng, không đảo hai ô ngày cho nhau.
-- Số tiền và số lượng chỉ lấy phần chữ số, bỏ dấu phân cách nghìn.
-- Không đọc phần chữ ký, tên người ký và dòng địa điểm - ngày tháng ở cuối trang.
-- Nếu một ô khó đọc, trả về chuỗi rỗng thay vì đoán.`;
+- Chỉ lấy những dòng CÓ chữ viết tay, theo đúng thứ tự từ trên xuống. Dòng trống bỏ hẳn.
+- Chỉ đọc đúng chữ nhìn thấy trên giấy, không suy diễn. Ô trống trong một dòng có chữ
+  thì để chuỗi rỗng "".
+- Số lượng, đơn giá, trọng lượng chỉ lấy phần chữ số, bỏ dấu phân cách nghìn.`;
   }
 
   /** Lấy đối tượng JSON đầu tiên trong câu trả lời, kể cả khi bị bọc trong ```json. */

@@ -106,8 +106,24 @@ function FieldError({ message }: { message?: string }) {
  * kỳ trạng thái nào - gõ sai một chữ cũng phải xoá đi khai lại từ đầu. Truyền
  * `recordId` vào là form chuyển sang chế độ sửa: nạp sẵn dữ liệu cũ và lưu bằng
  * PATCH thay vì POST.
+ *
+ * `prefill` dùng cho đường nhập liệu từ tệp Excel, PDF hoặc ảnh chụp: dữ liệu đọc
+ * được đổ vào ĐÚNG form này thay vì một biểu mẫu riêng. Trước đây trang "Nhập từ
+ * file" tự dựng một form rút gọn, nên nó thiếu trường, thiếu kiểm tra dữ liệu và
+ * hiển thị VAT mặc định 10% trong khi trang tạo tờ khai đã suy thuế từ mã HS - cùng
+ * một lô hàng mà hai đường nhập cho ra hai con số thuế khác nhau.
  */
-export function CustomsForm({ recordId }: { recordId?: string } = {}) {
+export function CustomsForm({
+  recordId,
+  prefill,
+  prefillNotice,
+}: {
+  recordId?: string;
+  /** Dữ liệu điền sẵn, cùng hình dạng với một tờ khai đã lưu. */
+  prefill?: Partial<CustomsRecord> | null;
+  /** Lời nhắc hiện trên đầu form, ví dụ cảnh báo dữ liệu đọc từ chữ viết tay. */
+  prefillNotice?: React.ReactNode;
+} = {}) {
   const router = useRouter();
   const createCustoms = useCreateCustoms();
   const updateCustoms = useUpdateCustoms();
@@ -186,17 +202,26 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
     );
   };
 
-  // Nạp dữ liệu tờ khai đang sửa vào form - đúng một lần cho mỗi tờ khai.
+  // Nạp dữ liệu vào form - đúng một lần cho mỗi nguồn dữ liệu.
   //
   // React Query tự tải lại khi cửa sổ được focus lại; nếu nạp lại mỗi lần dữ liệu
   // về thì người dùng chuyển sang tab khác rồi quay lại là mất sạch phần đang gõ.
+  //
+  // Hai nguồn đi qua CÙNG một đoạn nạp: tờ khai đã lưu (chế độ sửa) và dữ liệu đọc
+  // từ tệp/ảnh. Nhờ vậy không thể xảy ra chuyện một nguồn điền thiếu trường so với
+  // nguồn kia.
   const prefilledId = useRef<string | null>(null);
+  const prefillSource = (existing as CustomsRecord | undefined) ?? prefill ?? null;
+  const prefillKey = recordId ?? (prefill ? 'prefill' : null);
   useEffect(() => {
-    if (!existing || prefilledId.current === recordId) return;
-    prefilledId.current = recordId ?? null;
-    const record = existing as CustomsRecord;
+    if (!prefillSource || prefilledId.current === prefillKey) return;
+    prefilledId.current = prefillKey;
+    const record = prefillSource as CustomsRecord;
     setRecordNo(record.recordNo || '');
-    setEntryDate(toDateInput(record.entryDate) || new Date().toISOString().slice(0, 10));
+    // Nguồn không có ngày thì để trống, KHÔNG lấy ngày hôm nay: dữ liệu đọc từ ảnh
+    // có thể không đọc ra ngày, mà một ngày trông hợp lý sẵn trong ô thì người dùng
+    // bấm lưu luôn. Ô trống sẽ bị bộ kiểm tra chặn lại và buộc điền tay.
+    setEntryDate(toDateInput(record.entryDate));
     setExitDate(toDateInput(record.exitDate));
     setCurrency(normalizeCurrency(record.currency));
     setExchangeRate(Number(record.exchangeRate) > 0 ? Number(record.exchangeRate) : DEFAULT_EXCHANGE_RATE);
@@ -245,7 +270,7 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
           }))
         : [emptyMaterial(1)],
     );
-  }, [existing, recordId]);
+  }, [prefillSource, prefillKey]);
 
   useEffect(() => {
     const value = recordNo.trim();
@@ -335,8 +360,12 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
     if (!recordNo.trim()) errors.recordNo = 'Bắt buộc nhập số tờ khai';
     else if (recordNoTaken) errors.recordNo = 'Số tờ khai này đã tồn tại trong hệ thống';
 
-    if (!entryDate) errors.entryDate = 'Bắt buộc chọn ngày nhập cảnh';
-    if (exitDate && exitDate < entryDate) errors.exitDate = 'Ngày xuất cảnh không thể trước ngày nhập cảnh';
+    // Nhãn phải trùng với nhãn của chính hai ô đó trên form, và trùng với biểu mẫu
+    // Excel/PDF: "bắt đầu / kết thúc vận chuyển", không phải "nhập cảnh / xuất cảnh".
+    if (!entryDate) errors.entryDate = 'Bắt buộc chọn ngày bắt đầu vận chuyển';
+    if (exitDate && exitDate < entryDate) {
+      errors.exitDate = 'Ngày kết thúc vận chuyển không thể trước ngày bắt đầu';
+    }
 
     if (!exporterName.trim()) errors.exporterName = 'Bắt buộc nhập nhà xuất khẩu';
     if (!importerName.trim()) errors.importerName = 'Bắt buộc nhập nhà nhập khẩu';
@@ -464,6 +493,8 @@ export function CustomsForm({ recordId }: { recordId?: string } = {}) {
           </option>
         ))}
       </datalist>
+
+      {prefillNotice}
 
       <Section
         icon={FileText}
