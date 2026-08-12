@@ -29,6 +29,8 @@ export function ImportExcel() {
   const [error, setError] = useState('');
   const [fromImage, setFromImage] = useState(false);
   const [prefill, setPrefill] = useState<Partial<CustomsRecord> | null>(null);
+  /** Ô mà máy chủ đọc hai lần ra hai kết quả khác nhau - cần soi lại trước tiên. */
+  const [uncertain, setUncertain] = useState<string[]>([]);
 
   /** Đưa dữ liệu đọc được về đúng hình dạng một tờ khai, để nạp vào form chính. */
   const toRecordShape = (data: any): Partial<CustomsRecord> => ({
@@ -42,7 +44,10 @@ export function ImportExcel() {
     journeys: (data.journeys || []).map((leg: any, index: number) => ({
       id: `parsed-${index}`,
       legNumber: leg.legNumber || index + 1,
-      transportType: leg.transportType || 'ROAD',
+      // Giữ nguyên giá trị rỗng khi máy chủ không xác định được phương thức: form sẽ
+      // hiện "chưa đọc được, hãy chọn" và chặn lưu. Điền sẵn 'ROAD' như trước là biến
+      // một ô chưa đọc được thành một câu trả lời trông như chắc chắn.
+      transportType: leg.transportType || '',
       origin: leg.origin || '',
       destination: leg.destination || '',
     })),
@@ -83,6 +88,7 @@ export function ImportExcel() {
     try {
       const res = await aiApi.parseFile(file);
       setPrefill(toRecordShape(res.data));
+      setUncertain(Array.isArray(res.data?.uncertain) ? res.data.uncertain : []);
       setStep('review');
     } catch (e: any) {
       // Lỗi từ máy chủ nói rõ hơn nhiều (chưa cài mô hình, ảnh quá lớn, mô hình
@@ -119,7 +125,7 @@ export function ImportExcel() {
         </p>
         <button
           type="button"
-          onClick={() => { setStep('upload'); setPrefill(null); setError(''); setFromImage(false); }}
+          onClick={() => { setStep('upload'); setPrefill(null); setError(''); setFromImage(false); setUncertain([]); }}
           className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
         >
           Chọn tệp khác
@@ -133,10 +139,18 @@ export function ImportExcel() {
         <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <p className="font-medium">Hãy đối chiếu lại với bản giấy trước khi lưu.</p>
+            <p className="font-medium">
+              {uncertain.length > 0
+                ? `Có ${uncertain.length} ô cần bạn soi lại - đã tô viền vàng bên dưới.`
+                : 'Hãy đối chiếu lại với bản giấy trước khi lưu.'}
+            </p>
             <p className="mt-1 text-amber-700">
-              Chữ viết tay dễ bị đọc lệch, nhất là chữ số (0/6, 1/7) và mã HS. Ô nào nhận dạng không chắc sẽ được để trống
-              thay vì đoán bừa - trong đó có số tờ khai, bạn cần tự nhập.
+              {uncertain.length > 0
+                ? 'Bảng hàng hoá được đọc hai lần; những ô hai lần cho ra hai kết quả khác nhau được tô vàng vì đó là chỗ dễ sai nhất. Các ô còn lại hai lần đọc đều khớp.'
+                : 'Chữ viết tay dễ bị đọc lệch, nhất là chữ số (0/6, 1/7) và mã HS. Bảng hàng hoá đã được đọc hai lần và hai lần đều khớp nhau.'}
+            </p>
+            <p className="mt-1 text-amber-700">
+              Ô nào nhận dạng không chắc sẽ được để trống thay vì đoán bừa - trong đó có số tờ khai, bạn cần tự nhập.
             </p>
           </div>
         </div>
@@ -145,7 +159,7 @@ export function ImportExcel() {
   );
 
   if (step === 'review' && prefill) {
-    return <CustomsForm prefill={prefill} prefillNotice={notice} />;
+    return <CustomsForm prefill={prefill} prefillNotice={notice} uncertainFields={uncertain} />;
   }
 
   return (

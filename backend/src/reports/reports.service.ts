@@ -696,12 +696,17 @@ export class ReportsService {
       },
 
       sectionHeader('Hành trình vận chuyển'),
-      { table: { headerRows: 1, widths: [28, 90, '*', '*'], body: journeyBody, dontBreakRows: true }, layout: this.tableLayout(), margin: [0, 0, 0, 8] },
+      // Cột "Loại vận chuyển" rộng 150pt vì tiêu đề của nó liệt kê sẵn bốn lựa chọn
+      // (hàng không / biển / sắt / bộ); để 90pt như trước thì tiêu đề ngắt thành bốn
+      // dòng và đẩy phần chữ ký sang trang sau.
+      { table: { headerRows: 1, widths: [28, 150, '*', '*'], body: journeyBody, dontBreakRows: true }, layout: this.tableLayout(), margin: [0, 0, 0, 8] },
 
       sectionHeader('Danh mục hàng hóa / vật tư'),
       // Cột "Trọng lượng (kg)" phải đủ rộng cho nhãn của nó: hẹp hơn thì nhãn ngắt
       // xuống ba dòng và đội cao cả dòng tiêu đề.
-      { table: { headerRows: 1, widths: [22, 42, '*', 38, 32, 46, 36, 52], body: materialBody, dontBreakRows: true }, layout: this.tableLayout(), margin: [0, 0, 0, 8] },
+      // Cột "Đơn giá" rộng 68pt vì nhãn của nó có kèm ví dụ "5.000.000"; hẹp hơn thì
+      // nhãn ngắt xuống ba dòng và đội cao cả dòng tiêu đề.
+      { table: { headerRows: 1, widths: [22, 42, '*', 38, 32, 68, 36, 52], body: materialBody, dontBreakRows: true }, layout: this.tableLayout(), margin: [0, 0, 0, 8] },
     ];
 
     if (totals) {

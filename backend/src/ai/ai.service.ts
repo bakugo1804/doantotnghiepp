@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   CustomsFieldKey,
   CUSTOMS_FIELDS,
+  IDENTITY_SECTION,
   matchField,
   matchMaterialColumn,
   matchJourneyColumn,
@@ -16,6 +17,7 @@ import {
   isPlaceholderText,
   normalizeLabel,
   normalizeTransport,
+  TRANSPORT_CHOICES,
 } from '../common/customs-form';
 import { normalizeCountryCode } from '../common/countries';
 import { normalizeHsCode } from '../hs-codes/hs-codes.service';
@@ -73,6 +75,15 @@ type PdfCell = { x: number; text: string };
 /** Sai số ngang (pt) khi ghép một dòng bị ngắt vào đúng ô của dòng phía trên. */
 const CONTINUATION_X_TOLERANCE = 6;
 
+/**
+ * Sai số ngang khi ghép phần bị ngắt dòng của NHÃN TIÊU ĐỀ.
+ *
+ * Rộng hơn hẳn ngưỡng của dòng dữ liệu vì nhãn tiêu đề được canh giữa ô: dòng thứ hai
+ * của "Trọng lượng (kg)" lệch 16pt so với dòng đầu, còn dữ liệu canh trái thì thẳng
+ * hàng. 40pt vẫn nhỏ hơn bề rộng một cột nên không ghép lẫn sang cột bên cạnh.
+ */
+const HEADER_CONTINUATION_X_TOLERANCE = 40;
+
 type ParsedJourney = {
   legNumber: number;
   transportType: string; // AIR | SEA | RAIL | ROAD
@@ -100,6 +111,12 @@ type ParsedForm = {
   vatRate?: number;
   notes?: string;
   materials: ParsedMaterial[];
+  /**
+   * Những ô mà hai lượt đọc độc lập cho ra hai kết quả khác nhau - tức là chỗ đáng
+   * ngờ nhất, cần người dùng soi lại trước tiên. Đường dẫn theo dạng "containerNo"
+   * hoặc "materials.0.unitPrice". Chỉ có khi đọc từ ảnh.
+   */
+  uncertain?: string[];
 };
 
 @Injectable()
@@ -673,19 +690,61 @@ export class AiService {
       build: (get: (key: K) => string | undefined, index: number) => T | null;
     },
   ): T[] {
-    /** Một dòng được coi là tiêu đề khi có ít nhất hai ô khớp danh mục cột. */
-    const headerColumnsOf = (cells: PdfCell[]): K[] => {
-      const keys: K[] = [];
-      for (const cell of cells) {
-        const key = options.match(cell.text);
-        if (key && !keys.includes(key)) keys.push(key);
+    /**
+     * Khoá cột của TỪNG Ô trên dòng tiêu đề, giữ nguyên vị trí.
+     *
+     * Trả về mảng có đúng số phần tử bằng số ô, ô nào không nhận ra thì để undefined.
+     * Không được dồn lại thành danh sách ngắn hơn: ô dữ liệu ở các dòng dưới được gán
+     * theo VỊ TRÍ, nên một tiêu đề không nhận ra mà bị bỏ khỏi danh sách sẽ làm lệch
+     * toàn bộ các cột phía sau nó - đã gặp thật, cột đơn giá đọc ra giá trị của cột bên
+     * cạnh.
+     */
+    const headerKeysOf = (cells: PdfCell[]): (K | undefined)[] => cells.map((cell) => options.match(cell.text));
+    const definedCount = (keys: (K | undefined)[]) => keys.filter(Boolean).length;
+
+    /**
+     * Ghép những dòng chữ là phần bị ngắt của chính dòng tiêu đề.
+     *
+     * Tiêu đề dài như "Đơn giá (ví dụ 5.000.000)" hay "Loại vận chuyển (hàng không /
+     * biển / sắt / bộ)" bị pdfmake ngắt xuống dòng thứ hai. Không ghép lại thì nhãn chỉ
+     * còn một nửa ("Đơn giá (ví") và không khớp danh mục cột nào.
+     */
+    const mergeHeaderRows = (start: number): { texts: string[]; xs: number[]; consumed: number } => {
+      const texts = rows[start].map((cell) => cell.text);
+      const xs = rows[start].map((cell) => cell.x);
+      let consumed = 1;
+
+      for (let next = start + 1; next < rows.length; next++) {
+        const cells = rows[next];
+        if (cells.length === 0) break;
+        // Dòng dữ liệu (bắt đầu bằng số thứ tự) thì tiêu đề đã hết.
+        if (/^\d+$/.test(cells[0].text.trim())) break;
+        // Phần bị ngắt luôn ít ô hơn dòng tiêu đề gốc.
+        if (cells.length >= texts.length) break;
+
+        // Mọi ô phải tìm được một cột đủ gần. Ngưỡng ở đây RỘNG hơn ngưỡng dùng cho
+        // dòng dữ liệu: nhãn tiêu đề được canh giữa ô nên phần bị ngắt xuống dòng lệch
+        // khá nhiều so với mốc x của dòng đầu - đo thực tế "(kg)" lệch 16pt, trong khi
+        // ngưỡng của dòng dữ liệu chỉ 6pt vì dữ liệu canh trái nên thẳng hàng.
+        const nearestOf = (cell: PdfCell) => {
+          let nearest = 0;
+          for (let i = 1; i < xs.length; i++) {
+            if (Math.abs(xs[i] - cell.x) < Math.abs(xs[nearest] - cell.x)) nearest = i;
+          }
+          return Math.abs(xs[nearest] - cell.x) <= HEADER_CONTINUATION_X_TOLERANCE ? nearest : -1;
+        };
+        if (cells.some((cell) => nearestOf(cell) < 0)) break;
+
+        for (const cell of cells) texts[nearestOf(cell)] = `${texts[nearestOf(cell)]} ${cell.text}`.trim();
+        consumed++;
       }
-      return keys;
+      return { texts, xs, consumed };
     };
 
     for (let header = 0; header < rows.length; header++) {
-      const columns = headerColumnsOf(rows[header]);
-      if (columns.length < 2 || !options.required.every((key) => columns.includes(key))) continue;
+      const merged = mergeHeaderRows(header);
+      const columns = headerKeysOf(merged.texts.map((text, i) => ({ text, x: merged.xs[i] })));
+      if (definedCount(columns) < 2 || !options.required.every((key) => columns.includes(key))) continue;
 
       const indexPosition = columns.indexOf(options.indexColumn);
 
@@ -693,7 +752,8 @@ export class AiService {
       // dòng chữ (mô tả dài bị ngắt), nên phải ghép xong mới biết giá trị đầy đủ.
       const collected: { values: (string | undefined)[]; anchors: PdfCell[] }[] = [];
 
-      for (let r = header + 1; r < rows.length; r++) {
+      // Bắt đầu sau TOÀN BỘ dòng tiêu đề, kể cả phần bị ngắt xuống dòng.
+      for (let r = header + merged.consumed; r < rows.length; r++) {
         const cells = rows[r];
 
         const indexText = indexPosition >= 0 ? cells[indexPosition]?.text : undefined;
@@ -710,7 +770,7 @@ export class AiService {
 
         // Tiêu đề được pdfmake lặp lại ở đầu mỗi trang: bỏ qua, đừng coi là hết bảng,
         // nếu không tờ khai dài hơn một trang chỉ đọc được phần nằm ở trang đầu.
-        if (headerColumnsOf(cells).length >= 2) continue;
+        if (definedCount(headerKeysOf(cells)) >= 2) continue;
 
         const previous = collected[collected.length - 1];
         if (!previous) continue;
@@ -783,24 +843,46 @@ export class AiService {
       }
     };
 
-    // Hỏi TÁCH THÀNH NHIỀU LƯỢT chứ không dồn cả tờ khai vào một câu hỏi.
-    //
-    // Đo trên cùng một ảnh: hỏi gộp cả 16 trường lẫn hai bảng trong một lần thì mô
-    // hình bỏ trắng số vận đơn và số tờ khai, lặp lại ở mọi lần thử; hỏi riêng từng
-    // phần thì đọc đúng. Nó KHÔNG phải không nhìn thấy - hỏi thẳng "ô Số tờ khai ghi
-    // gì" là trả lời đúng ngay. Càng nhiều thứ phải trả về một lượt, mô hình nhỏ càng
-    // đánh rơi vài ô. Chi phí của việc tách: mỗi lượt thêm khoảng 6 giây.
-    const [header, tables] = await Promise.all([
-      ask({ system: this.buildVisionHeaderPrompt(), user: VISION_INSTRUCTION }),
-      ask({ system: this.buildVisionTablePrompt(), user: VISION_INSTRUCTION }),
-    ]);
-    if (!header && !tables) {
+    /**
+     * Hỏi thành NHIỀU CÂU NGẮN, mỗi câu một khối của biểu mẫu, chạy song song.
+     *
+     * Đây là kết luận đo được, không phải sở thích trình bày. Trên cùng ba ảnh mẫu:
+     *
+     *   phần đầu tờ khai   hỏi gộp 16 ô: 89,6%   chia theo khối: 91,7%
+     *   hai bảng            hỏi gộp:      73%     chia hai câu:   93%
+     *
+     * Và những ô bị cách hỏi gộp đánh rơi hoàn toàn (hai ô ngày, số container, điểm
+     * đi/điểm đến của mọi chặng) thì cách hỏi ngắn lại đọc ra. Mô hình KHÔNG phải
+     * không nhìn thấy: hỏi thẳng "ô này ghi gì" là trả lời đúng ngay. Càng bắt trả về
+     * nhiều thứ trong một lượt, mô hình quy mô nhỏ càng bỏ sót.
+     *
+     * Chi phí thấp hơn tưởng: mọi câu dùng CÙNG một ảnh nên phần mã hoá ảnh được dùng
+     * lại giữa các lượt, bảy câu hỏi chỉ mất khoảng 20 giây.
+     */
+    const fieldQuestions = this.buildVisionFieldQuestions();
+    const materialQuestion = this.buildMaterialQuestion();
+    /**
+     * Bảng hàng hoá được đọc HAI LẦN.
+     *
+     * Đây là nơi chứa tiền: một chữ số 0 bị đọc thiếu ở cột đơn giá là sai cả tờ khai
+     * (đã gặp 5.000.000 bị đọc thành 500.000). Hai lượt đọc độc lập không sửa được lỗi,
+     * nhưng chỗ nào hai lượt không đồng ý thì gần như chắc chắn là chỗ đáng ngờ - và
+     * chỉ ra đúng vài ô cần soi lại thì hữu ích hơn nhiều so với bảo người dùng kiểm
+     * tra lại cả tờ khai.
+     */
+    const questions = [...fieldQuestions, this.buildJourneyQuestion(), materialQuestion, materialQuestion];
+    const answers = await Promise.all(questions.map((question) => ask({ user: question })));
+    const parts = answers.filter(Boolean);
+    if (parts.length === 0) {
       throw new ServiceUnavailableException(
         'Mô hình không trả về dữ liệu đọc được từ ảnh. Hãy chụp lại rõ hơn (đủ sáng, thẳng góc, thấy trọn tờ khai) rồi thử lại.',
       );
     }
 
-    const data: any = { ...(tables ?? {}), ...(header ?? {}) };
+    const secondMaterialRead = answers[answers.length - 1];
+    // Bỏ lượt đọc thứ hai ra khỏi phần gộp: nó chỉ dùng để đối chiếu.
+    const data: any = Object.assign({}, ...answers.slice(0, -1).filter(Boolean));
+    const uncertain = this.compareMaterialReads(data?.materials, secondMaterialRead?.materials);
 
     /**
      * Lượt hỏi bù cho những ô vẫn còn trống.
@@ -826,7 +908,31 @@ export class AiService {
       }
     }
 
-    return this.assembleFromVision(data);
+    /**
+     * Loại vận chuyển: hỏi lại dưới dạng CHỌN MỘT trong bốn.
+     *
+     * Đây là ô duy nhất trên tờ khai chỉ có bốn giá trị hợp lệ, nên thay vì để mô
+     * hình viết tự do rồi đi dò từ khoá, hỏi thẳng "ô này là cái nào trong bốn cái
+     * sau". Đo trên ba ảnh mẫu: lượt đọc bảng trả về những chuỗi như "Đường Vận tải"
+     * cho 3 trong 4 chặng, và trước đây mọi chuỗi không nhận ra đều bị mặc định thành
+     * đường bộ - một lô đi máy bay bị tính phí đường bộ, sai gấp hơn ba lần.
+     */
+    const rawJourneys: any[] = Array.isArray(data.journeys) ? data.journeys : [];
+    const unresolved = rawJourneys.filter((leg) => !normalizeTransport(leg?.transportType));
+    if (rawJourneys.length > 0 && unresolved.length > 0) {
+      const answer = await ask({ user: this.buildTransportQuestion(rawJourneys.length) });
+      const picked: any[] = Array.isArray(answer?.legs) ? answer.legs : [];
+      rawJourneys.forEach((leg, index) => {
+        if (normalizeTransport(leg?.transportType)) return;
+        const resolved = normalizeTransport(this.textOfAnswer(picked[index]));
+        // Vẫn không ra thì để TRỐNG, không đoán: biểu mẫu sẽ buộc người dùng tự chọn.
+        leg.transportType = resolved ?? '';
+      });
+    }
+
+    const form = this.assembleFromVision(data);
+    if (uncertain.length > 0) form.uncertain = uncertain;
+    return form;
   }
 
   /**
@@ -896,33 +1002,88 @@ export class AiService {
   }
 
   /**
-   * Lời nhắc cho lượt đọc PHẦN TRÊN tờ khai (các ô đơn lẻ, không có bảng).
+   * Các câu hỏi đọc PHẦN TRÊN tờ khai - chia theo từng khối của biểu mẫu.
    *
-   * Nhãn trường được sinh trực tiếp từ CUSTOMS_FIELDS - cùng nguồn với phần xuất và
-   * đọc tệp, nên đổi nhãn biểu mẫu ở một chỗ là lời nhắc này đổi theo.
+   * Vì sao chia nhỏ thay vì một lời nhắc liệt kê cả 16 ô: đo trên ba ảnh mẫu, hỏi gộp
+   * đạt 89,6% còn chia theo khối đạt 91,7%, và quan trọng hơn là những ô bị hỏi gộp
+   * đánh rơi hoàn toàn (hai ô ngày, số container) thì hỏi theo khối lại đọc ra. Câu
+   * hỏi ngắn thì mô hình soi đúng vùng cần đọc thay vì phải quét cả trang một lượt.
+   *
+   * Các câu chạy song song nên tổng thời gian gần như không tăng: ảnh giống nhau ở mọi
+   * câu nên phần mã hoá ảnh được dùng lại giữa các lượt.
+   *
+   * Danh sách ô sinh từ CUSTOMS_FIELDS theo `section`, nên thêm một trường vào biểu
+   * mẫu là nó tự vào đúng câu hỏi của khối đó.
    */
-  private buildVisionHeaderPrompt(): string {
-    const fieldLines = CUSTOMS_FIELDS.map((f) => `  "${f.key}": chữ viết ở ô "${f.label}"`).join('\n');
+  private buildVisionFieldQuestions(): string[] {
+    const bySection = new Map<string, typeof CUSTOMS_FIELDS>();
+    for (const field of CUSTOMS_FIELDS) {
+      // Tiền tệ tách riêng thành câu hỏi chọn một, xem buildCurrencyQuestion.
+      if (field.key === 'currency') continue;
+      const list = bySection.get(field.section) ?? [];
+      list.push(field);
+      bySection.set(field.section, list);
+    }
 
-    return `Bạn đọc chữ viết tay trên ảnh chụp tờ khai hải quan Việt Nam.
+    /** Gộp các khối lại thành từng câu hỏi, kèm lời nhắc riêng cho từng nhóm. */
+    const groups: { sections: string[]; extra?: string }[] = [
+      {
+        sections: [IDENTITY_SECTION, 'Thông tin chung'],
+        extra:
+          'Ngày trên tờ khai viết theo thứ tự NGÀY/THÁNG/NĂM của Việt Nam, ví dụ "3/9/2026"\n' +
+          'là ngày 3 tháng 9 năm 2026. Giữ nguyên đúng như trên giấy, không đổi thứ tự.',
+      },
+      { sections: ['Bên xuất khẩu', 'Bên nhập khẩu'] },
+      {
+        sections: ['Chứng từ'],
+        extra: 'Đây là các dãy chữ và số dài. Đọc từng ký tự một, ghi liền không dấu cách.',
+      },
+      { sections: ['Tài chính'] },
+    ];
 
-Chỉ đọc PHẦN TRÊN của tờ khai: ô "Số tờ khai" ở góc trên bên phải, và các khối
-THÔNG TIN CHUNG, BÊN XUẤT KHẨU, BÊN NHẬP KHẨU, CHỨNG TỪ, TÀI CHÍNH.
-Bỏ qua hai bảng ở nửa dưới và phần chữ ký ở cuối trang.
+    const questions = groups
+      .map((group) => {
+        const fields = group.sections.flatMap((section) => bySection.get(section) ?? []);
+        if (fields.length === 0) return '';
+        const lines = fields
+          .map((field) => `- "${field.key}": ô "${field.label}" — ${this.describeFieldPosition(field)}`)
+          .join('\n');
+        return `Đây là ảnh chụp một tờ khai hải quan đã điền tay. Đọc giúp giá trị viết trong ${fields.length} ô sau:
+${lines}
 
-Trả về DUY NHẤT một đối tượng JSON với đúng các khoá sau, không kèm giải thích:
-{
-${fieldLines}
-}
+Trả về đúng một đối tượng JSON với các khoá trên. Ô nào trên giấy để trắng thì giá trị là "".${
+          group.extra ? `\n${group.extra}` : ''
+        }`;
+      })
+      .filter(Boolean);
 
-QUY TẮC BẮT BUỘC:
-- Chỉ đọc đúng chữ nhìn thấy trên giấy. TUYỆT ĐỐI KHÔNG suy diễn, không tự bù thông tin thiếu.
-- Ô nào CÓ chữ viết tay thì bắt buộc phải ghi lại. Chỉ ô thật sự trắng, hoặc chỉ có
-  dấu gạch ngang, dấu chấm lửng, mới trả về chuỗi rỗng "".
-- Dãy số dài đọc từng chữ số một, ghi liền không dấu cách.
-- Ngày giữ nguyên đúng như trên giấy, ví dụ "11/8/2026". Trong khối THÔNG TIN CHUNG,
-  dòng trên là ngày bắt đầu vận chuyển, dòng dưới là ngày kết thúc vận chuyển.
-- Không đọc dòng địa điểm - ngày tháng và tên người ký ở cuối trang.`;
+    return [...questions, this.buildCurrencyQuestion()];
+  }
+
+  /** Mô tả vị trí của một ô để mô hình khỏi phải quét cả trang. */
+  private describeFieldPosition(field: (typeof CUSTOMS_FIELDS)[number]): string {
+    if (field.key === 'declarationNo') return 'ô riêng ở góc trên bên phải, ngay dưới dòng "Mẫu số"';
+    const inSection = CUSTOMS_FIELDS.filter((f) => f.section === field.section);
+    const row = inSection.findIndex((f) => f.key === field.key) + 1;
+    return `khối ${field.section.toUpperCase()}, dòng ${row}`;
+  }
+
+  /**
+   * Ô "Tiền tệ" chỉ có hai giá trị hợp lệ, nên hỏi dạng CHỌN MỘT.
+   *
+   * Đo trên ba ảnh mẫu: hỏi chung cùng hai ô trống bên cạnh (thuế suất, ghi chú) thì
+   * mô hình trả rỗng cả ba, 0/3 lần đọc được; hỏi riêng "USD hay VND" thì 3/3 đúng.
+   * Đọc sai ô này là sai toàn bộ số tiền của tờ khai, nên nó xứng đáng một lượt riêng.
+   */
+  private buildCurrencyQuestion(): string {
+    return `Đây là ảnh chụp một tờ khai hải quan đã điền tay. Xem khối "TÀI CHÍNH", dòng "Tiền tệ".
+
+Trong ô đó người khai đã viết đơn vị tiền nào? Chỉ có hai khả năng:
+- USD (đô la Mỹ) — cũng có thể viết "usd", "đô", "$"
+- VND (đồng Việt Nam) — cũng có thể viết "vnd", "vnđ", "đồng", "₫"
+
+Trả về đúng một đối tượng JSON: { "currency": "USD" } hoặc { "currency": "VND" }.
+Nếu ô đó thật sự để trắng thì trả { "currency": "" }.`;
   }
 
   /**
@@ -949,39 +1110,124 @@ Trả về đúng một đối tượng JSON với các khoá trên. Ngày giữ
 "11/8/2026". Ô nào trên giấy để trắng thì giá trị là "".`;
   }
 
-  /** Lời nhắc cho lượt đọc HAI BẢNG ở nửa dưới tờ khai. */
-  private buildVisionTablePrompt(): string {
-    // Cột STT bị loại khỏi danh sách hỏi mô hình, vì hai lẽ:
-    //
-    // 1. Không cần: số thứ tự dòng được đánh lại theo đúng trật tự đọc được
-    //    (xem assembleFromVision), nên câu trả lời của mô hình bị bỏ đi.
-    // 2. Có hại: đo trên cùng một ảnh, chỉ riêng việc thêm dòng '"itemNo" (cột STT)'
-    //    vào lời nhắc khiến mô hình 7B bỏ trắng cả hai ô ngày lẫn số tờ khai - lặp
-    //    lại 3/3 lần, bỏ dòng đó ra thì 3/3 lần đọc được. Lời nhắc càng nhiều mục
-    //    vụn thì mô hình nhỏ càng dễ đánh rơi những ô nó vốn đọc được.
-    const materialCols = MATERIAL_COLUMNS.filter((c) => c.key !== 'itemNo')
+  /**
+   * Câu hỏi chọn một cho cột "Loại vận chuyển" của bảng hành trình.
+   *
+   * Cố ý không kèm lời nhắc hệ thống và không nhắc luật "không suy diễn" - xem ghi
+   * chú ở parseImage về việc bộ luật nghiêm ngặt làm mô hình ngả về bỏ trống.
+   */
+  private buildTransportQuestion(legCount: number): string {
+    return `Đây là ảnh chụp một tờ khai hải quan đã điền tay. Xem bảng "HÀNH TRÌNH VẬN CHUYỂN",
+cột "Loại vận chuyển", ${legCount} dòng đầu tiên có chữ viết.
+
+Với mỗi dòng, chọn MỘT trong bốn phương thức sau, dựa vào chữ viết trong ô:
+${TRANSPORT_CHOICES.map((choice) => `- ${choice.label}`).join('\n')}
+
+Lưu ý cách viết tay hay gặp: "đường bay", "máy bay", "hàng không" đều là Đường hàng
+không; "đường sắt", "tàu hoả", "tàu lửa" là Đường sắt; "đường biển", "tàu biển" là
+Đường biển; "đường bộ", "xe tải", "ô tô" là Đường bộ. Ba chữ "đường sắt", "đường bộ",
+"đường biển" chỉ khác nhau ở từ cuối nên đọc kỹ từ đó.
+
+Trả về đúng một đối tượng JSON: { "legs": ["...", "..."] } - mảng ${legCount} phần tử,
+mỗi phần tử là nhãn đầy đủ của phương thức đã chọn cho dòng tương ứng.`;
+  }
+
+  /**
+   * Câu hỏi đọc bảng HÀNH TRÌNH VẬN CHUYỂN.
+   *
+   * Tách khỏi bảng hàng hoá: hỏi cả hai bảng trong một lượt thì mô hình đọc được loại
+   * vận chuyển nhưng bỏ trắng điểm đi và điểm đến của MỌI chặng (đo trên cả ba ảnh
+   * mẫu). Tách ra thì đọc đủ ba ô của từng chặng.
+   *
+   * Không liệt kê danh sách bốn phương thức ở đây - thêm danh sách vào làm điểm số tụt
+   * từ 83% xuống 73%. Việc quy chữ viết về một trong bốn phương thức để dành cho lượt
+   * hỏi chọn một riêng (buildTransportQuestion), chỉ chạy khi cần.
+   */
+  private buildJourneyQuestion(): string {
+    const cols = JOURNEY_COLUMNS.filter((c) => c.key !== 'legNumber')
+      .map((c) => `"${c.key}"`)
+      .join(', ');
+
+    return `Đây là ảnh chụp một tờ khai hải quan đã điền tay. Xem bảng "HÀNH TRÌNH VẬN CHUYỂN"
+ở nửa dưới trang. Bảng có 6 dòng nhưng thường chỉ vài dòng đầu có chữ viết tay.
+
+Với mỗi dòng CÓ chữ, đọc ba ô: "Loại vận chuyển", "Điểm đi", "Điểm đến".
+
+Trả về đúng một đối tượng JSON: { "journeys": [ { ${cols} } ] }
+Chỉ đưa vào những dòng có chữ, theo đúng thứ tự từ trên xuống.`;
+  }
+
+  /**
+   * Câu hỏi đọc bảng DANH MỤC HÀNG HÓA / VẬT TƯ.
+   *
+   * Cột STT không hỏi: số thứ tự dòng được đánh lại theo trật tự đọc được (xem
+   * assembleFromVision) nên câu trả lời bị bỏ đi, mà thêm nó vào lời nhắc thì đo được
+   * là mô hình bắt đầu đánh rơi những ô khác.
+   */
+  private buildMaterialQuestion(): string {
+    const cols = MATERIAL_COLUMNS.filter((c) => c.key !== 'itemNo')
       .map((c) => `"${c.key}": cột "${c.label}"`)
       .join(', ');
-    const journeyCols = JOURNEY_COLUMNS.filter((c) => c.key !== 'legNumber')
-      .map((c) => `"${c.key}": cột "${c.label}"`)
-      .join(', ');
 
-    return `Bạn đọc chữ viết tay trên ảnh chụp tờ khai hải quan Việt Nam.
+    return `Đây là ảnh chụp một tờ khai hải quan đã điền tay. Xem bảng "DANH MỤC HÀNG HÓA / VẬT TƯ"
+ở cuối trang. Bảng có 6 dòng nhưng thường chỉ vài dòng đầu có chữ viết tay.
 
-Chỉ đọc HAI BẢNG ở nửa dưới tờ khai: "HÀNH TRÌNH VẬN CHUYỂN" và
-"DANH MỤC HÀNG HÓA / VẬT TƯ". Bỏ qua toàn bộ phần trên và phần chữ ký.
+Với mỗi dòng CÓ chữ, đọc các ô: ${cols}
 
-Trả về DUY NHẤT một đối tượng JSON, không kèm giải thích:
-{
-  "journeys": [ { ${journeyCols} } ],
-  "materials": [ { ${materialCols} } ]
-}
+Trả về đúng một đối tượng JSON: { "materials": [ { ... } ] }
+Chỉ đưa vào những dòng có chữ, theo đúng thứ tự từ trên xuống.
 
-QUY TẮC BẮT BUỘC:
-- Chỉ lấy những dòng CÓ chữ viết tay, theo đúng thứ tự từ trên xuống. Dòng trống bỏ hẳn.
-- Chỉ đọc đúng chữ nhìn thấy trên giấy, không suy diễn. Ô trống trong một dòng có chữ
-  thì để chuỗi rỗng "".
-- Số lượng, đơn giá, trọng lượng chỉ lấy phần chữ số, bỏ dấu phân cách nghìn.`;
+Riêng ba cột số:
+- Trọng lượng có thể được viết kèm chữ "kg" - giữ nguyên cũng được.
+- Đơn giá có thể được viết kèm dấu phân cách nghìn ("5.000.000") - GIỮ NGUYÊN cả dấu,
+  đừng bỏ đi, vì dấu phân cách cho biết số đó có bao nhiêu chữ số.
+- Số tiền viết liền không dấu thì đếm thật kỹ từng chữ số 0 trước khi trả lời.`;
+  }
+
+  /**
+   * Đối chiếu hai lượt đọc bảng hàng hoá, trả về đường dẫn những ô không khớp.
+   *
+   * Chỉ so những cột mang số liệu tính tiền và định danh hàng: mô tả hàng hoá lệch một
+   * chữ thì không đáng gọi là đáng ngờ, còn đơn giá lệch một chữ số thì có.
+   */
+  private compareMaterialReads(first: any, second: any): string[] {
+    if (!Array.isArray(first) || !Array.isArray(second)) return [];
+    const compared: MaterialFieldKey[] = ['hsCode', 'quantity', 'unitPrice', 'weight'];
+    const flat = (value: any) => String(value ?? '').replace(/[\s.,]/g, '').toLowerCase();
+    const paths: string[] = [];
+
+    // Hai lượt đọc ra số dòng khác nhau thì bản thân việc đó đã đáng ngờ.
+    if (first.length !== second.length) paths.push('materials');
+
+    first.forEach((row: any, index: number) => {
+      const other = second[index];
+      if (!other) return;
+      for (const key of compared) {
+        if (flat(row?.[key]) !== flat(other?.[key])) paths.push(`materials.${index}.${key}`);
+      }
+    });
+    return paths;
+  }
+
+  /**
+   * Lấy phần chữ từ một phần tử trong câu trả lời của mô hình.
+   *
+   * Được hỏi "trả về mảng chuỗi" thì mô hình vẫn có lúc trả về mảng đối tượng
+   * ({ "type": "Đường biển", ... }). Bắt cả hai dạng, vì nếu chỉ nhận chuỗi thì cả
+   * lượt hỏi lại coi như mất trắng - đúng lỗi đã gặp: chặng đọc được nhưng vẫn ra rỗng.
+   */
+  private textOfAnswer(value: any): string {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'object') {
+      for (const key of ['transportType', 'type', 'label', 'value', 'name', 'loai']) {
+        const candidate = (value as any)[key];
+        if (typeof candidate === 'string' && candidate.trim()) return candidate;
+      }
+      const firstString = Object.values(value).find((v) => typeof v === 'string' && v.trim());
+      return typeof firstString === 'string' ? firstString : '';
+    }
+    return String(value);
   }
 
   /** Lấy đối tượng JSON đầu tiên trong câu trả lời, kể cả khi bị bọc trong ```json. */
@@ -1010,7 +1256,10 @@ QUY TẮC BẮT BUỘC:
     const journeys: ParsedJourney[] = (Array.isArray(data?.journeys) ? data.journeys : [])
       .map((j: any, index: number) => ({
         legNumber: this.toNumber(j?.legNumber) || index + 1,
-        transportType: normalizeTransport(j?.transportType) || 'ROAD',
+        // Không nhận ra thì để TRỐNG, tuyệt đối không mặc định về 'ROAD': lượt hỏi
+        // lại phía trên đã cho mô hình cơ hội chọn một trong bốn, còn im lặng đổi
+        // thành đường bộ là ghi sai phương thức và tính sai phí vận chuyển.
+        transportType: normalizeTransport(j?.transportType) ?? '',
         origin: String(j?.origin ?? '').trim(),
         destination: String(j?.destination ?? '').trim(),
       }))

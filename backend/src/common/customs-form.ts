@@ -53,17 +53,39 @@ export const CUSTOMS_FIELDS: CustomsFieldDef[] = [
   // hàng xuất cảnh khỏi nước bán TRƯỚC rồi mới nhập cảnh vào nước mua, tức là
   // ngược đúng thứ tự của hai cột này, nên đọc lên là thấy mâu thuẫn ngay. Các
   // cách viết cũ vẫn nằm trong synonyms để những file đã phát hành đọc lại được.
+  // Nhãn ghi kèm định dạng "(ngày/tháng/năm)".
+  //
+  // Biểu mẫu này để in ra điền tay, và người Việt viết 3/9/2026 là ngày 3 tháng 9.
+  // Không ghi rõ thì chính người điền cũng có thể viết theo kiểu Mỹ, và mô hình đọc
+  // ảnh lại càng dễ đảo ngày với tháng. Ghi thẳng lên biểu mẫu là cách rẻ nhất để cả
+  // người điền lẫn máy đọc cùng hiểu một kiểu. Synonyms giữ cả nhãn cũ (không có
+  // phần trong ngoặc) để những tệp đã phát hành vẫn đọc lại được.
   {
     key: 'entryDate',
-    label: 'Ngày bắt đầu vận chuyển',
+    label: 'Ngày bắt đầu vận chuyển (ngày/tháng/năm)',
     section: 'Thông tin chung',
-    synonyms: ['ngay bat dau van chuyen', 'bat dau van chuyen', 'ngay bat dau', 'ngay nhap canh', 'ngay nhap', 'entry date'],
+    synonyms: [
+      'ngay bat dau van chuyen',
+      'bat dau van chuyen',
+      'ngay bat dau',
+      'ngay bat dau van chuyen ngay thang nam',
+      'ngay nhap canh',
+      'ngay nhap',
+      'entry date',
+    ],
   },
   {
     key: 'exitDate',
-    label: 'Ngày kết thúc vận chuyển',
+    label: 'Ngày kết thúc vận chuyển (ngày/tháng/năm)',
     section: 'Thông tin chung',
-    synonyms: ['ngay ket thuc van chuyen', 'ket thuc van chuyen', 'ngay ket thuc', 'ngay xuat canh', 'exit date'],
+    synonyms: [
+      'ngay ket thuc van chuyen',
+      'ket thuc van chuyen',
+      'ngay ket thuc',
+      'ngay ket thuc van chuyen ngay thang nam',
+      'ngay xuat canh',
+      'exit date',
+    ],
   },
   { key: 'flightNo', label: 'Số hiệu chuyến (bay/tàu)', section: 'Thông tin chung', synonyms: ['so hieu chuyen', 'so hieu chuyen bay tau', 'so chuyen bay', 'chuyen bay', 'ten tau', 'so hieu tau', 'flight no', 'so hieu tau xe'] },
 
@@ -79,7 +101,14 @@ export const CUSTOMS_FIELDS: CustomsFieldDef[] = [
   { key: 'billOfLading', label: 'Số vận đơn', section: 'Chứng từ', synonyms: ['so van don', 'van don', 'bill of lading', 'bl'] },
   { key: 'containerNo', label: 'Số container', section: 'Chứng từ', synonyms: ['so container', 'container', 'container no'] },
 
-  { key: 'currency', label: 'Tiền tệ', section: 'Tài chính', synonyms: ['tien te', 'loai tien', 'currency'] },
+  // Ghi rõ hai lựa chọn ngay trên biểu mẫu: ô này quyết định toàn bộ số tiền của tờ
+  // khai, mà chỉ ghi "Tiền tệ" thì người điền có thể viết "đồng", "đô", "$"...
+  {
+    key: 'currency',
+    label: 'Tiền tệ (USD hoặc VND)',
+    section: 'Tài chính',
+    synonyms: ['tien te', 'tien te usd hoac vnd', 'loai tien', 'dong tien', 'currency'],
+  },
   { key: 'vatRate', label: 'Thuế suất VAT (%)', section: 'Tài chính', synonyms: ['thue suat vat', 'thue vat', 'vat', 'thue suat'] },
   { key: 'notes', label: 'Ghi chú', section: 'Tài chính', synonyms: ['ghi chu', 'notes', 'note'] },
 ];
@@ -99,7 +128,18 @@ export const MATERIAL_COLUMNS: MaterialColumnDef[] = [
   { key: 'description', label: 'Mô tả hàng hóa', synonyms: ['mo ta hang hoa', 'mo ta', 'ten hang', 'ten hang hoa', 'hang hoa', 'description'] },
   { key: 'quantity', label: 'Số lượng', synonyms: ['so luong', 'sl', 'quantity', 'qty'] },
   { key: 'unit', label: 'Đơn vị', synonyms: ['don vi', 'dvt', 'dv', 'unit'] },
-  { key: 'unitPrice', label: 'Đơn giá', synonyms: ['don gia', 'gia', 'unit price', 'price', 'don gia usd'] },
+  // Nhãn có ví dụ kèm dấu phân cách nghìn.
+  //
+  // Đo được: số tiền viết liền "5000000" bị mô hình đọc ảnh đếm thiếu một chữ số 0
+  // (ra 500.000 - sai mười lần), lặp lại ở mọi lần thử và cả khi hỏi từng chữ số; cùng
+  // số đó viết "5.000.000" thì đọc đúng ngay. Mô hình yếu ở chỗ đếm một dãy ký tự
+  // giống nhau, mà dấu phân cách thì chia dãy đó thành từng nhóm ba. Hướng người điền
+  // viết có dấu là cách chữa rẻ nhất và hiệu quả nhất.
+  {
+    key: 'unitPrice',
+    label: 'Đơn giá (ví dụ 5.000.000)',
+    synonyms: ['don gia', 'don gia vi du 5 000 000', 'gia', 'unit price', 'price', 'don gia usd'],
+  },
   { key: 'origin', label: 'Xuất xứ', synonyms: ['xuat xu', 'origin'] },
   { key: 'weight', label: 'Trọng lượng (kg)', synonyms: ['trong luong', 'trong luong kg', 'tl', 'weight', 'kg'] },
 ];
@@ -115,7 +155,20 @@ export interface JourneyColumnDef {
 /** Cột của bảng hành trình vận chuyển (nhiều chặng). */
 export const JOURNEY_COLUMNS: JourneyColumnDef[] = [
   { key: 'legNumber', label: 'Chặng', synonyms: ['chang', 'chang so', 'stt', 'leg', 'so chang'] },
-  { key: 'transportType', label: 'Loại vận chuyển', synonyms: ['loai van chuyen', 'phuong thuc', 'phuong thuc van chuyen', 'transport'] },
+  // Liệt kê sẵn bốn lựa chọn trên tiêu đề cột: hệ thống chỉ có bốn phương thức, mà
+  // cột trống thì người điền viết đủ kiểu ("đường bay", "máy bay", "HK") và mỗi cách
+  // viết lạ là một lần đọc sai.
+  {
+    key: 'transportType',
+    label: 'Loại vận chuyển (hàng không / biển / sắt / bộ)',
+    synonyms: [
+      'loai van chuyen',
+      'loai van chuyen hang khong bien sat bo',
+      'phuong thuc',
+      'phuong thuc van chuyen',
+      'transport',
+    ],
+  },
   { key: 'origin', label: 'Điểm đi', synonyms: ['diem di', 'noi di', 'origin', 'from'] },
   { key: 'destination', label: 'Điểm đến', synonyms: ['diem den', 'noi den', 'destination', 'to'] },
 ];
@@ -180,18 +233,80 @@ export function matchJourneyColumn(label: unknown): JourneyFieldKey | undefined 
   return JOURNEY_LOOKUP[normalizeLabel(label)];
 }
 
-/** Chuẩn hóa loại vận chuyển về enum AIR/SEA/RAIL/ROAD. */
+/**
+ * Chuẩn hóa loại vận chuyển về enum AIR/SEA/RAIL/ROAD.
+ *
+ * Danh sách cách viết phải rộng, vì đây là ô người ta điền TAY: cùng một phương
+ * thức mà mỗi người viết một kiểu ("đường bay", "hàng không", "máy bay", "HK"). Bỏ
+ * sót một cách viết thì giá trị bị coi như không đọc được - và trước đây bên gọi lại
+ * mặc định về ROAD, nên một lô hàng đi máy bay bị ghi thành đường bộ, kéo theo phí
+ * vận chuyển tính sai (biểu giá hàng không đắt hơn đường bộ hơn ba lần).
+ *
+ * Thứ tự kiểm tra có ý nghĩa: xét cụm dài trước cụm ngắn, vì "đường sắt" và "đường
+ * bộ" chỉ khác nhau ở từ cuối.
+ */
 export function normalizeTransport(value: unknown): 'AIR' | 'SEA' | 'RAIL' | 'ROAD' | undefined {
   const raw = String(value ?? '').trim().toUpperCase();
   if (['AIR', 'SEA', 'RAIL', 'ROAD'].includes(raw)) return raw as any;
   const n = normalizeLabel(value);
   if (!n) return undefined;
-  if (/(hang khong|may bay|hkhong|\bair\b)/.test(n)) return 'AIR';
-  if (/(duong bien|tau bien|\bbien\b|\bsea\b)/.test(n)) return 'SEA';
-  if (/(duong sat|tau lua|tau hoa|\bsat\b|\brail\b)/.test(n)) return 'RAIL';
-  if (/(duong bo|xe tai|\bo to\b|oto|\bbo\b|\broad\b)/.test(n)) return 'ROAD';
-  return undefined;
+
+  // Hàng không: "đường bay" là cách viết rất hay gặp mà trước đây không nhận ra.
+  if (/(hang khong|hkhong|duong bay|duong khong|may bay|tau bay|phi co|phi hanh|\bair\b|\bhk\b|\bavia\b)/.test(n)) return 'AIR';
+  // Đường biển / đường thuỷ.
+  if (/(duong bien|duong thuy|duong song|tau bien|tau thuy|\bbien\b|\bthuy\b|\bsea\b|\bocean\b|\bship\b)/.test(n)) return 'SEA';
+  // Đường sắt.
+  if (/(duong sat|duong ray|tau lua|tau hoa|hoa xa|xe lua|\bsat\b|\bray\b|\brail\b|\btrain\b)/.test(n)) return 'RAIL';
+  // Đường bộ.
+  if (/(duong bo|xe tai|xe container|\bo to\b|oto|xe dau keo|\bbo\b|\bxe\b|\broad\b|\btruck\b)/.test(n)) return 'ROAD';
+
+  // Cuối cùng: so khớp gần với bốn nhãn chuẩn.
+  //
+  // Mô hình đọc ảnh trả về chữ méo chứ không phải chữ khác nghĩa: đã gặp "Dương viễn"
+  // cho "Đường biển" - lệch đúng một ký tự. Bắt được những trường hợp này thì đỡ hẳn
+  // một lượt hỏi lại. Ngưỡng 0,8 đủ chặt để "Đường Vận tải" (chỉ giống 0,62) vẫn bị
+  // coi là không đọc được, thay vì bị gán bừa vào một phương thức.
+  return closestTransport(n, 0.8);
 }
+
+/** Khoảng cách Levenshtein, dùng để so hai chuỗi ngắn. */
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = previous[0];
+    previous[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const current = previous[j];
+      previous[j] = Math.min(
+        previous[j] + 1, // xoá
+        previous[j - 1] + 1, // thêm
+        diagonal + (a[i - 1] === b[j - 1] ? 0 : 1), // thay
+      );
+      diagonal = current;
+    }
+  }
+  return previous[b.length];
+}
+
+/** Nhãn phương thức gần nhất với chuỗi đã chuẩn hoá, nếu đủ giống. */
+function closestTransport(normalized: string, threshold: number): 'AIR' | 'SEA' | 'RAIL' | 'ROAD' | undefined {
+  let best: { code: 'AIR' | 'SEA' | 'RAIL' | 'ROAD'; score: number } | undefined;
+  for (const choice of TRANSPORT_CHOICES) {
+    const label = normalizeLabel(choice.label);
+    const score = 1 - editDistance(normalized, label) / Math.max(normalized.length, label.length);
+    if (!best || score > best.score) best = { code: choice.code, score };
+  }
+  return best && best.score >= threshold ? best.code : undefined;
+}
+
+/** Nhãn tiếng Việt của bốn phương thức, dùng để hỏi lại mô hình theo dạng chọn một. */
+export const TRANSPORT_CHOICES: { code: 'AIR' | 'SEA' | 'RAIL' | 'ROAD'; label: string }[] = [
+  { code: 'AIR', label: 'Đường hàng không' },
+  { code: 'SEA', label: 'Đường biển' },
+  { code: 'RAIL', label: 'Đường sắt' },
+  { code: 'ROAD', label: 'Đường bộ' },
+];
 
 /**
  * Ô mẫu để trống trên biểu mẫu giấy được điền bằng dấu chấm nối hoặc gạch ngang.

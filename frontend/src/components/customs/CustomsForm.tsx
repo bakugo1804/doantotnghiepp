@@ -117,12 +117,18 @@ export function CustomsForm({
   recordId,
   prefill,
   prefillNotice,
+  uncertainFields,
 }: {
   recordId?: string;
   /** Dữ liệu điền sẵn, cùng hình dạng với một tờ khai đã lưu. */
   prefill?: Partial<CustomsRecord> | null;
   /** Lời nhắc hiện trên đầu form, ví dụ cảnh báo dữ liệu đọc từ chữ viết tay. */
   prefillNotice?: React.ReactNode;
+  /**
+   * Những ô mà máy chủ đọc hai lần ra hai kết quả khác nhau, dạng
+   * "materials.0.unitPrice". Được tô vàng để người dùng biết soi vào đâu trước.
+   */
+  uncertainFields?: string[];
 } = {}) {
   const router = useRouter();
   const createCustoms = useCreateCustoms();
@@ -373,6 +379,9 @@ export function CustomsForm({
     journeys.forEach((leg) => {
       if (!leg.origin.trim()) errors[`leg-${leg.legNumber}-origin`] = 'Thiếu điểm đi';
       if (!leg.destination.trim()) errors[`leg-${leg.legNumber}-destination`] = 'Thiếu điểm đến';
+      // Phương thức quyết định biểu giá vận chuyển, nên không được để trống - dữ liệu
+      // đọc từ ảnh có thể không xác định được ô này.
+      if (!leg.transportType) errors[`leg-${leg.legNumber}-transportType`] = 'Chọn phương thức vận chuyển';
     });
 
     materials.forEach((material, index) => {
@@ -465,7 +474,18 @@ export function CustomsForm({
   const invalid = 'border-rose-500 bg-rose-50/50 focus:border-rose-500 focus:ring-rose-100';
   const fieldClass = (key: string) => cn(input, errorOf(key) ? invalid : normal);
   const cell = 'w-full rounded-lg border px-2 py-1.5 text-sm outline-none transition focus:ring-2';
-  const cellClass = (key: string) => cn(cell, errorOf(key) ? invalid : normal);
+
+  /**
+   * Ô mà hai lượt đọc ảnh không đồng ý với nhau: viền vàng.
+   *
+   * Khác hẳn viền đỏ - đỏ là dữ liệu sai luật và không lưu được, vàng là "máy đọc
+   * không chắc, mắt người xem lại đi". Nhờ vậy người dùng chỉ phải soi vài ô thay vì
+   * đối chiếu lại cả tờ khai.
+   */
+  const doubtful = useMemo(() => new Set(uncertainFields ?? []), [uncertainFields]);
+  const unsure = 'border-amber-400 bg-amber-50/60 focus:border-amber-500 focus:ring-amber-100';
+  const cellClass = (key: string, path?: string) =>
+    cn(cell, errorOf(key) ? invalid : path && doubtful.has(path) ? unsure : normal);
 
   if (isEditing && loadingRecord) {
     return <p className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Đang tải tờ khai...</p>;
@@ -678,19 +698,26 @@ export function CustomsForm({
               </div>
 
               <div className="grid gap-3 md:grid-cols-3">
-                <div>
+                <div data-field={`leg-${leg.legNumber}-transportType`}>
                   <label className="mb-1 block text-xs font-medium text-slate-600">Phương thức</label>
                   <select
                     value={leg.transportType}
                     onChange={(event) => updateJourney(leg.legNumber, 'transportType', event.target.value as TransportType)}
-                    className={cn(cell, normal)}
+                    className={cn(cell, errorOf(`leg-${leg.legNumber}-transportType`) ? invalid : normal)}
                   >
+                    {/* Lựa chọn trống chỉ xuất hiện khi dữ liệu đọc từ ảnh không xác
+                        định được phương thức. Trước đây trường hợp đó bị mặc định
+                        thành đường bộ, người dùng không hề biết là máy đoán. */}
+                    {!leg.transportType && <option value="">— chưa đọc được, hãy chọn —</option>}
                     {(['SEA', 'AIR', 'ROAD', 'RAIL'] as const).map((type) => (
                       <option key={type} value={type}>
                         {msg.customs.transportTypes[type]}
                       </option>
                     ))}
                   </select>
+                  {errorOf(`leg-${leg.legNumber}-transportType`) && (
+                    <p className="mt-1 text-xs text-rose-600">{errorOf(`leg-${leg.legNumber}-transportType`)}</p>
+                  )}
                 </div>
                 <div data-field={`leg-${leg.legNumber}-origin`}>
                   <label className="mb-1 block text-xs font-medium text-slate-600">Điểm đi</label>
@@ -790,7 +817,7 @@ export function CustomsForm({
                         list="hs-codes"
                         placeholder="8471.30"
                         title="Chọn từ danh mục hoặc gõ mã mới - mã mới sẽ được tự thêm vào danh mục khi lưu"
-                        className={cn(cell, normal, 'w-28 font-mono')}
+                        className={cn(cellClass(`material-${index}-hsCode`, `materials.${index}.hsCode`), 'w-28 font-mono')}
                       />
                       {material.hsCode.trim() && (
                         <p className={cn('mt-1 text-[11px]', known ? 'text-emerald-600' : 'text-amber-600')}>
@@ -815,7 +842,7 @@ export function CustomsForm({
                         step="0.01"
                         value={material.quantity}
                         onChange={(event) => setMaterial(index, 'quantity', Number(event.target.value))}
-                        className={cn(cellClass(`material-${index}-quantity`), 'w-24 tabular-nums')}
+                        className={cn(cellClass(`material-${index}-quantity`, `materials.${index}.quantity`), 'w-24 tabular-nums')}
                       />
                       <FieldError message={errorOf(`material-${index}-quantity`)} />
                     </td>
@@ -845,7 +872,7 @@ export function CustomsForm({
                         step="0.01"
                         value={material.unitPrice}
                         onChange={(event) => setMaterial(index, 'unitPrice', Number(event.target.value))}
-                        className={cn(cellClass(`material-${index}-unitPrice`), 'w-28 tabular-nums')}
+                        className={cn(cellClass(`material-${index}-unitPrice`, `materials.${index}.unitPrice`), 'w-28 tabular-nums')}
                       />
                       <FieldError message={errorOf(`material-${index}-unitPrice`)} />
                     </td>
@@ -874,7 +901,7 @@ export function CustomsForm({
                         value={material.weight}
                         onChange={(event) => setMaterial(index, 'weight', event.target.value)}
                         placeholder="0"
-                        className={cn(cellClass(`material-${index}-weight`), 'w-24 tabular-nums')}
+                        className={cn(cellClass(`material-${index}-weight`, `materials.${index}.weight`), 'w-24 tabular-nums')}
                       />
                       <FieldError message={errorOf(`material-${index}-weight`)} />
                     </td>
