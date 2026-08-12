@@ -150,7 +150,7 @@ async function main() {
       transportType: 'SEA' as const,
       leg1Origin: 'SHANGHAI',
       leg1Destination: 'HAIPHONG',
-      vesselName: 'Ocean Pearl',
+      flightNo: 'Ocean Pearl',
       exporterName: 'Công ty TNHH Logistics Đông Dương',
       exporterCountry: 'CN',
       importerName: 'Công ty TNHH Dệt may Bắc Nam',
@@ -329,8 +329,22 @@ async function main() {
         transportType,
         leg1Origin: route.origin,
         leg1Destination: route.destination,
+        // Chặng phải được ghi cả vào bảng journeys, không chỉ hai cột leg1.
+        //
+        // Ứng dụng lưu hành trình dưới dạng nhiều chặng; cột leg1/leg2 chỉ là bản sao
+        // phẳng giữ cho tương thích ngược. Seed chỉ ghi cột phẳng thì dữ liệu demo
+        // mang một hình dạng khác hẳn dữ liệu do người dùng tạo, và trang chi tiết
+        // phải rơi về nhánh dự phòng - nhánh đó không hiện được loại vận chuyển của
+        // từng chặng.
+        journeys: [{ legNumber: 1, transportType, origin: route.origin, destination: route.destination }],
+        // Số hiệu chuyến luôn ghi vào flightNo, kể cả tàu biển.
+        //
+        // Biểu mẫu khai báo và bản Excel/PDF chỉ có MỘT ô "Số hiệu chuyến (bay/tàu)",
+        // và form chỉ ghi vào cột flightNo. Seed ghi tên tàu vào cột vesselName riêng
+        // thì cùng một thông tin nằm ở hai cột khác nhau tuỳ theo hồ sơ do seed tạo
+        // hay do người dùng tạo.
         ...(transportType === 'AIR' ? { flightNo: `VN${100 + Math.floor(random() * 800)}` } : {}),
-        ...(transportType === 'SEA' ? { vesselName: pick(['Ocean Pearl', 'Blue Horizon', 'Pacific Star'] as const) } : {}),
+        ...(transportType === 'SEA' ? { flightNo: pick(['Ocean Pearl', 'Blue Horizon', 'Pacific Star'] as const) } : {}),
         exporterName,
         exporterCountry,
         importerName,
@@ -405,9 +419,25 @@ async function main() {
       exchangeRate: sample.exchangeRate,
     });
 
+    // Ba tờ khai mẫu viết tay chỉ khai hai cột leg1, chưa có danh sách chặng; dựng
+    // chặng đầu từ chính hai cột đó để mọi tờ khai demo cùng một hình dạng dữ liệu.
+    const legs =
+      sample.journeys ??
+      (sample.leg1Origin
+        ? [
+            {
+              legNumber: 1,
+              transportType: sample.transportType,
+              origin: sample.leg1Origin,
+              destination: sample.leg1Destination,
+            },
+          ]
+        : []);
+
     await prisma.customsRecord.create({
       data: {
         ...sample,
+        journeys: legs.length > 0 ? { create: legs } : undefined,
         vatRate: totals.vatRate,
         vatAmount: totals.vatAmount,
         importDutyRate: totals.importDutyRate,

@@ -283,9 +283,17 @@ export default function CustomsDetailPage() {
               </>
             )}
 
-            {record.flightNo && <div className="flex justify-between"><span className="text-gray-600">Chuyến bay:</span><span className="font-medium">{record.flightNo}</span></div>}
-            {record.vesselName && <div className="flex justify-between"><span className="text-gray-600">Tàu:</span><span className="font-medium">{record.vesselName}</span></div>}
-            {record.trainNo && <div className="flex justify-between"><span className="text-gray-600">Tàu hỏa:</span><span className="font-medium">{record.trainNo}</span></div>}
+            {/* Một dòng duy nhất cho số hiệu chuyến, đúng như biểu mẫu khai báo và
+                bản Excel/PDF xuất ra. Trước đây hiện ba dòng riêng "Chuyến bay",
+                "Tàu", "Tàu hỏa" theo ba cột cũ trong cơ sở dữ liệu, nên một lô hàng
+                đi đường biển do form tạo ra (form chỉ ghi vào cột flightNo) bị gắn
+                nhãn "Chuyến bay". Thứ tự ưu tiên giữ đúng như lúc kết xuất tệp. */}
+            {(record.flightNo || record.vesselName || record.trainNo) && (
+              <div className="flex justify-between">
+                <span className="text-gray-600">Số hiệu chuyến:</span>
+                <span className="font-medium">{record.flightNo || record.vesselName || record.trainNo}</span>
+              </div>
+            )}
           </div>
         </div>
 
