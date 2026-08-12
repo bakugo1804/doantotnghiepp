@@ -1,5 +1,6 @@
 'use client';
 import { useRouter, useParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { useCustomsOne, useCustomsTransitions, useUpdateCustomsStatus, useDeleteCustoms } from '@/hooks/useCustoms';
 import { formatDate, formatDateTime, STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
 import { ArrowLeft, ChevronRight, Download, FileText, GitBranch, History, Trash2, Loader2, CheckCircle, Pencil, Undo2 } from 'lucide-react';
@@ -7,6 +8,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { reportsApi, downloadBlob } from '@/lib/api';
 import { RecordTasksPanel } from '@/components/customs/RecordTasksPanel';
+import { DeleteCustomsDialog } from '@/components/customs/DeleteCustomsDialog';
 import { CurrencyToggle, Money } from '@/components/settings/CurrencyProvider';
 import { countryLabel, unitLabel } from '@/lib/reference-data';
 import type { CustomsStatus, Journey } from '@/types';
@@ -24,8 +26,16 @@ const isBackwardStep = (from: string, to: string) => {
 export default function CustomsDetailPage() {
   const router = useRouter();
   const { id } = useParams();
+  const { data: session } = useSession();
+  // Xoá tờ khai là quyền của cấp quản lý (@Roles ở customs.controller). Vai trò khác
+  // thì ẩn nút, thay vì để họ bấm rồi nhận lỗi 403.
+  const role = (session?.user as any)?.role as string | undefined;
+  const canDelete = role === 'ADMIN' || role === 'DIRECTOR';
   const [statusNote, setStatusNote] = useState('');
   const [statusError, setStatusError] = useState('');
+  const [askDelete, setAskDelete] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
   const { data: record, isLoading } = useCustomsOne(id as string);
   const { data: transitions } = useCustomsTransitions(id as string);
@@ -53,10 +63,16 @@ export default function CustomsDetailPage() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!confirm('Xác nhận xóa?')) return;
-    await deleteCustoms.mutateAsync(id as string);
-    router.push('/dashboard/customs');
+  const confirmDelete = async () => {
+    setDeleteError('');
+    try {
+      await deleteCustoms.mutateAsync(id as string);
+      router.push('/dashboard/customs');
+    } catch (error: any) {
+      // Trước đây lỗi ở đây không hiện ở đâu cả: thiếu quyền là bấm mãi không thấy gì.
+      const detail = error?.response?.data?.message;
+      setDeleteError((Array.isArray(detail) ? detail[0] : detail) || 'Không xoá được tờ khai này.');
+    }
   };
 
   const handleStatusChange = async (status: CustomsStatus) => {
@@ -114,9 +130,16 @@ export default function CustomsDetailPage() {
           <button onClick={handleExportPdf} className="p-2.5 bg-rose-100 text-rose-600 hover:bg-rose-200 rounded-lg transition" title="Xuất PDF">
             <FileText className="h-5 w-5" />
           </button>
-          <button onClick={handleDelete} disabled={deleteCustoms.isPending} className="p-2.5 bg-red-100 text-red-600 hover:bg-red-200 rounded-lg transition disabled:opacity-50">
-            <Trash2 className="h-5 w-5" />
-          </button>
+          {canDelete && (
+            <button
+              onClick={() => { setAskDelete(true); setDeleteConfirmText(''); setDeleteError(''); }}
+              disabled={deleteCustoms.isPending}
+              className="p-2.5 bg-red-100 text-red-600 hover:bg-red-200 rounded-lg transition disabled:opacity-50"
+              title="Xoá tờ khai"
+            >
+              <Trash2 className="h-5 w-5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -419,6 +442,16 @@ export default function CustomsDetailPage() {
           </table>
         </div>
       </div>
+
+      <DeleteCustomsDialog
+        target={askDelete ? { id: record.id, recordNo: record.recordNo } : null}
+        onClose={() => setAskDelete(false)}
+        onConfirm={confirmDelete}
+        deleting={deleteCustoms.isPending}
+        error={deleteError}
+        confirmText={deleteConfirmText}
+        onConfirmTextChange={setDeleteConfirmText}
+      />
     </div>
   );
 }

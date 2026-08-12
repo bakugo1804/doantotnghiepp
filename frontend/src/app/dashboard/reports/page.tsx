@@ -36,8 +36,10 @@ export default function ReportsPage() {
   const intlLocale = vi ? 'vi-VN' : 'en-US';
 
   const { data, isLoading } = useCustomsList({ limit: 100 });
+  // Cùng khoá cache với bảng điều khiển và hook useCustomsStats: một API thì chỉ nên
+  // có một khoá, để sửa hay xoá tờ khai là mọi trang đọc số liệu đó đều được làm mới.
   const { data: stats, isLoading: isStatsLoading } = useQuery({
-    queryKey: ['reports-stats'],
+    queryKey: ['customs', 'stats'],
     queryFn: () => customsApi.getStats().then((response) => response.data),
   });
 

@@ -72,6 +72,13 @@ export function useDeleteCustoms() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => customsApi.delete(id).then((r) => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['customs'] }),
+    onSuccess: () => {
+      // Nhóm 'customs' gồm cả danh sách, thống kê và danh sách gần đây của bảng điều
+      // khiển - mọi chỗ đọc /customs đều dùng khoá bắt đầu bằng 'customs'.
+      qc.invalidateQueries({ queryKey: ['customs'] });
+      // Công việc gắn với tờ khai vừa xoá vẫn còn nhưng mất liên kết, nên danh sách
+      // công việc cũng phải tải lại.
+      qc.invalidateQueries({ queryKey: ['tasks'] });
+    },
   });
 }

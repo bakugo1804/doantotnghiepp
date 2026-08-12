@@ -45,6 +45,8 @@ export const customsApi = {
   getTransitions: (id: string) => apiClient.get(`/customs/${id}/transitions`),
   updateStatus: (id: string, status: string, note?: string) =>
     apiClient.patch(`/customs/${id}/status`, { status, note }),
+  /** Những dữ liệu sẽ mất nếu xoá - hỏi trước khi hiện hộp thoại xác nhận. */
+  getDeleteImpact: (id: string) => apiClient.get(`/customs/${id}/delete-impact`),
   delete: (id: string) => apiClient.delete(`/customs/${id}`),
 };
 

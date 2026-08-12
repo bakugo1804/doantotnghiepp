@@ -1,12 +1,15 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
 import { customsApi, reportsApi, downloadBlob } from '@/lib/api';
 import { formatDate } from '@/lib/utils';
 import { useMessages } from '@/hooks/useMessages';
 import { useStatusLabels, useTransportLabels } from '@/hooks/useCustomsLabels';
+import { useDeleteCustoms } from '@/hooks/useCustoms';
 import { CurrencyToggle, Money } from '@/components/settings/CurrencyProvider';
-import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, Search, FileSpreadsheet, FileText, Pencil } from 'lucide-react';
+import { DeleteCustomsDialog, type DeleteTarget } from '@/components/customs/DeleteCustomsDialog';
+import { ArrowDown, ArrowUp, ChevronsUpDown, Eye, Search, FileSpreadsheet, FileText, Pencil, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 
 /** Cột nào sắp xếp được, và sắp theo trường nào ở phía máy chủ. */
@@ -24,11 +27,23 @@ export function CustomsTable() {
   const msg = useMessages();
   const statusLabels = useStatusLabels();
   const transportLabels = useTransportLabels();
+  const { data: session } = useSession();
+  // Xoá tờ khai là quyền của cấp quản lý (xem @Roles ở customs.controller). Vai trò
+  // khác thì không hiện nút, thay vì hiện một nút bấm vào là báo lỗi 403.
+  const role = (session?.user as any)?.role as string | undefined;
+  const canDelete = role === 'ADMIN' || role === 'DIRECTOR';
+
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortBy, setSortBy] = useState<SortField>('entryDate');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleted, setDeleted] = useState('');
+  const deleteCustoms = useDeleteCustoms();
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 400);
@@ -87,6 +102,28 @@ export function CustomsTable() {
     downloadBlob(res.data, `to-khai-${recordNo}.pdf`);
   };
 
+  const openDelete = (record: { id: string; recordNo: string }) => {
+    setDeleteTarget({ id: record.id, recordNo: record.recordNo });
+    setConfirmText('');
+    setDeleteError('');
+    setDeleted('');
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteError('');
+    try {
+      const result = await deleteCustoms.mutateAsync(deleteTarget.id);
+      // Nói lại đúng những gì đã mất, kể cả phần công việc bị mất liên kết.
+      const extra = result?.unlinkedTasks > 0 ? ` · ${result.unlinkedTasks} công việc mất liên kết` : '';
+      setDeleted(`Đã xoá tờ khai ${deleteTarget.recordNo}${extra}.`);
+      setDeleteTarget(null);
+    } catch (error: any) {
+      const detail = error?.response?.data?.message;
+      setDeleteError((Array.isArray(detail) ? detail[0] : detail) || 'Không xoá được tờ khai này.');
+    }
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200">
       {/* Search */}
@@ -105,6 +142,15 @@ export function CustomsTable() {
           <CurrencyToggle />
         </div>
       </div>
+
+      {deleted && (
+        <div className="flex items-center justify-between gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
+          <span>{deleted}</span>
+          <button onClick={() => setDeleted('')} className="rounded px-2 py-0.5 text-xs font-medium transition hover:bg-emerald-100">
+            Đóng
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="overflow-x-auto">
@@ -162,6 +208,15 @@ export function CustomsTable() {
                       <button onClick={() => handleExportPdf(record.id, record.recordNo)} className="p-1.5 text-rose-500 hover:bg-rose-50 rounded" title="Tải PDF">
                         <FileText className="h-4 w-4" />
                       </button>
+                      {canDelete && (
+                        <button
+                          onClick={() => openDelete(record)}
+                          className="rounded p-1.5 text-red-500 transition hover:bg-red-50"
+                          title={`Xoá tờ khai ${record.recordNo}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -182,6 +237,16 @@ export function CustomsTable() {
           </div>
         </div>
       )}
+
+      <DeleteCustomsDialog
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+        deleting={deleteCustoms.isPending}
+        error={deleteError}
+        confirmText={confirmText}
+        onConfirmTextChange={setConfirmText}
+      />
     </div>
   );
 }

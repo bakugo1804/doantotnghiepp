@@ -537,9 +537,74 @@ export class CustomsService {
     };
   }
 
+  /**
+   * Xoá một tờ khai cùng toàn bộ dữ liệu con của nó.
+   *
+   * Trả về đúng những gì đã mất để giao diện nói lại cho người dùng: dòng hàng,
+   * chặng vận chuyển, nhật ký xử lý và tệp đính kèm đều bị xoá theo (khai báo
+   * onDelete: Cascade), còn công việc đã giao thì KHÔNG bị xoá mà chỉ mất liên kết
+   * tới tờ khai (onDelete: SetNull). Chỗ mất liên kết này là thứ dễ bỏ sót nhất nên
+   * phải đếm trước khi xoá và báo lại.
+   */
   async remove(id: string, user: AuthUser) {
-    const record = await this.findOne(id, user);
-    return this.prisma.customsRecord.delete({ where: { id: record.id } });
+    const record = await this.prisma.customsRecord.findFirst({
+      where: { id, ...this.toRecordScope(user) },
+      select: {
+        id: true,
+        recordNo: true,
+        status: true,
+        _count: { select: { materials: true, journeys: true, statusHistory: true, attachments: true, tasks: true } },
+      },
+    });
+    if (!record) throw new NotFoundException('Không tìm thấy tờ khai');
+
+    await this.prisma.customsRecord.delete({ where: { id: record.id } });
+
+    return {
+      recordNo: record.recordNo,
+      status: record.status,
+      deleted: {
+        materials: record._count.materials,
+        journeys: record._count.journeys,
+        statusHistory: record._count.statusHistory,
+        attachments: record._count.attachments,
+      },
+      /** Công việc vẫn còn, nhưng từ giờ không còn gắn với tờ khai nào. */
+      unlinkedTasks: record._count.tasks,
+    };
+  }
+
+  /**
+   * Những gì sẽ mất nếu xoá tờ khai này - để giao diện hỏi lại cho có căn cứ, thay
+   * vì một hộp thoại "Xác nhận xóa?" không nói gì.
+   */
+  async getDeleteImpact(id: string, user: AuthUser) {
+    const record = await this.prisma.customsRecord.findFirst({
+      where: { id, ...this.toRecordScope(user) },
+      select: {
+        recordNo: true,
+        status: true,
+        totalPayable: true,
+        currency: true,
+        _count: { select: { materials: true, journeys: true, statusHistory: true, attachments: true, tasks: true } },
+      },
+    });
+    if (!record) throw new NotFoundException('Không tìm thấy tờ khai');
+
+    return {
+      recordNo: record.recordNo,
+      status: record.status,
+      statusLabel: STATUS_LABELS[record.status as CustomsStatus],
+      totalPayable: record.totalPayable,
+      currency: record.currency,
+      materials: record._count.materials,
+      journeys: record._count.journeys,
+      statusHistory: record._count.statusHistory,
+      attachments: record._count.attachments,
+      linkedTasks: record._count.tasks,
+      /** Hồ sơ đã mang hiệu lực quyết định thì cần cảnh báo mạnh hơn. */
+      decided: ['APPROVED', 'COMPLETED'].includes(record.status),
+    };
   }
 
   /**

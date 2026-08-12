@@ -120,6 +120,13 @@ export class CustomsController {
     return this.customsService.updateStatus(id, status, req.user, note);
   }
 
+  @ApiOperation({ summary: 'Những dữ liệu sẽ mất nếu xoá tờ khai này' })
+  @Roles('ADMIN', 'DIRECTOR')
+  @Get(':id/delete-impact')
+  getDeleteImpact(@Param('id') id: string, @Request() req) {
+    return this.customsService.getDeleteImpact(id, req.user);
+  }
+
   @ApiOperation({ summary: 'Xóa tờ khai' })
   @Roles('ADMIN', 'DIRECTOR')
   @Delete(':id')

@@ -7,8 +7,10 @@ import { customsApi, usersApi } from '@/lib/api';
 import { STATUS_LABELS, TRANSPORT_LABELS } from '@/lib/utils';
 
 export default function AdminPage() {
+  // Cùng khoá cache với các trang khác đọc /customs/stats, để một thao tác sửa hay
+  // xoá tờ khai làm mới đồng loạt thay vì mỗi trang giữ một bản số liệu cũ riêng.
   const { data: stats, isLoading: isStatsLoading } = useQuery({
-    queryKey: ['stats'],
+    queryKey: ['customs', 'stats'],
     queryFn: () => customsApi.getStats().then((r) => r.data),
   });
 

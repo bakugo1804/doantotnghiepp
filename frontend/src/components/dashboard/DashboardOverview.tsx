@@ -45,15 +45,19 @@ export function DashboardOverview({ role, userName }: DashboardOverviewProps) {
   // Số liệu tổng hợp từ backend đã quy về USD; đổi tiếp sang đồng tiền đang xem.
   const money = (value: number) => compactCurrency(convertMoney(value, 'USD', display), display, vi ? 'vi-VN' : 'en-US');
 
+  // Khoá cache bắt đầu bằng 'customs' để mọi thao tác sửa/xoá tờ khai (đều làm mới
+  // nhóm 'customs') kéo theo cả bảng điều khiển. Trước đây trang này dùng khoá riêng
+  // 'dashboard-records' / 'dashboard-stats', nên xoá một tờ khai xong quay lại tổng
+  // quan vẫn thấy nó trong danh sách và vẫn được đếm vào các chỉ số.
   const { data: recordsData, isLoading: isRecordsLoading } = useQuery({
-    queryKey: ['dashboard-records', role],
+    queryKey: ['customs', 'recent', role],
     queryFn: () => customsApi.getAll({ page: 1, limit: 6 }).then((response) => response.data),
   });
 
   // Thống kê giờ mở cho mọi vai trò — trước đây chỉ ADMIN gọi được, nên nhân viên
   // nhìn thấy một dashboard rỗng dù vẫn đọc được chính những tờ khai đó.
   const { data: stats, isLoading: isStatsLoading } = useQuery({
-    queryKey: ['dashboard-stats'],
+    queryKey: ['customs', 'stats'],
     queryFn: () => customsApi.getStats().then((response) => response.data),
   });
 
